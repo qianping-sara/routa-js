@@ -55,7 +55,7 @@ class ClaudeCodeRenderer(
 
     // Unified colors - use panel background
     private val panelBg = UIUtil.getPanelBackground()
-    private val thinkingFg = JBColor(Color(0x6A1B9A), Color(0xCE93D8)) // Purple for thinking
+    private val thinkingFg = UIUtil.getLabelDisabledForeground() // Gray for thinking
     private val messageFg = JBColor(Color(0x2E7D32), Color(0x81C784)) // Green for assistant
     private val userFg = JBColor(Color(0x1565C0), Color(0x64B5F6)) // Blue for user
     private val toolFg = JBColor(Color(0xE65100), Color(0xFFB74D)) // Orange for tools
@@ -297,14 +297,14 @@ class ClaudeCodeRenderer(
 
             headerLabel = JBLabel("💡 Thinking...").apply {
                 foreground = thinkingFg
-                font = font.deriveFont(Font.ITALIC, font.size2D - 1)
+                font = font.deriveFont(Font.ITALIC, font.size2D - 2)
                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 alignmentX = Component.LEFT_ALIGNMENT
             }
 
             contentLabel = JBLabel().apply {
                 foreground = thinkingFg
-                font = font.deriveFont(Font.ITALIC, font.size2D - 1)
+                font = font.deriveFont(Font.ITALIC, font.size2D - 2)
                 border = JBUI.Borders.emptyLeft(16)
                 alignmentX = Component.LEFT_ALIGNMENT
             }

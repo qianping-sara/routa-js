@@ -584,7 +584,11 @@ class AgentSession(
      */
     suspend fun cancelPrompt() {
         try {
-            client?.cancel()
+            if (isClaudeCodeMode) {
+                claudeClient?.stop()
+            } else {
+                client?.cancel()
+            }
             updateState { copy(isProcessing = false) }
             addMessage(ChatMessage(MessageRole.INFO, "Cancelled"))
         } catch (e: Exception) {
