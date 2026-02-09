@@ -22,9 +22,15 @@ class DefaultAcpEventRenderer(
     private val scrollCallback: () -> Unit,
 ) : AcpEventRenderer {
 
-    override val container: JPanel = JPanel().apply {
+    // Inner content panel that holds actual messages
+    private val contentPanel: JPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+    }
+
+    override val container: JPanel = JPanel(BorderLayout()).apply {
         background = UIUtil.getPanelBackground()
+        add(contentPanel, BorderLayout.NORTH) // NORTH ensures content stays at top
     }
 
     // Streaming state
@@ -83,7 +89,7 @@ class DefaultAcpEventRenderer(
     }
 
     private fun endThinking(fullContent: String) {
-        currentThinkingPanel?.let { container.remove(it) }
+        currentThinkingPanel?.let { contentPanel.remove(it) }
         currentThinkingPanel = null
         if (fullContent.isNotBlank()) {
             val panel = createThinkingPanel(fullContent)
@@ -113,7 +119,7 @@ class DefaultAcpEventRenderer(
     }
 
     private fun endMessage(fullContent: String) {
-        currentMessagePanel?.let { container.remove(it) }
+        currentMessagePanel?.let { contentPanel.remove(it) }
         currentMessagePanel = null
         if (fullContent.isNotBlank()) {
             val panel = createMessagePanel("Assistant", fullContent, System.currentTimeMillis(),
@@ -300,19 +306,25 @@ class DefaultAcpEventRenderer(
 
     private fun addPanel(panel: JPanel) {
         panel.alignmentX = Component.LEFT_ALIGNMENT
-        container.add(panel)
-        container.add(Box.createVerticalStrut(2))
+        // Set maximum size to prevent vertical stretching
+        panel.maximumSize = Dimension(Int.MAX_VALUE, panel.preferredSize.height)
+        contentPanel.add(panel)
+        contentPanel.add(Box.createVerticalStrut(2))
+        contentPanel.revalidate()
+        contentPanel.repaint()
         container.revalidate()
         container.repaint()
     }
 
     override fun clear() {
-        container.removeAll()
+        contentPanel.removeAll()
         currentThinkingPanel = null
         currentMessagePanel = null
         thinkingBuffer.clear()
         messageBuffer.clear()
         toolCallPanels.clear()
+        contentPanel.revalidate()
+        contentPanel.repaint()
         container.revalidate()
         container.repaint()
     }
@@ -326,7 +338,7 @@ class DefaultAcpEventRenderer(
     }
 
     override fun getDebugState(): String {
-        return "DefaultRenderer[$agentKey](panels=${container.componentCount}, " +
+        return "DefaultRenderer[$agentKey](panels=${contentPanel.componentCount}, " +
                 "thinking=${currentThinkingPanel != null}, message=${currentMessagePanel != null})"
     }
 }

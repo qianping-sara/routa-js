@@ -27,9 +27,15 @@ class ClaudeCodeRenderer(
     private val scrollCallback: () -> Unit,
 ) : AcpEventRenderer {
 
-    override val container: JPanel = JPanel().apply {
+    // Inner content panel that holds actual messages
+    private val contentPanel: JPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+    }
+
+    override val container: JPanel = JPanel(BorderLayout()).apply {
         background = UIUtil.getPanelBackground()
+        add(contentPanel, BorderLayout.NORTH) // NORTH ensures content stays at top
     }
 
     // Streaming state
@@ -105,7 +111,7 @@ class ClaudeCodeRenderer(
 
     private fun endThinking(fullContent: String) {
         currentThinkingPanel?.let { panel ->
-            container.remove(panel)
+            contentPanel.remove(panel)
             val finalPanel = createThinkingPanel(fullContent)
             addPanel(finalPanel)
         }
@@ -134,7 +140,7 @@ class ClaudeCodeRenderer(
 
     private fun endMessage(fullContent: String) {
         currentMessagePanel?.let { panel ->
-            container.remove(panel)
+            contentPanel.remove(panel)
             val finalPanel = createMessagePanel(
                 "Claude", fullContent, System.currentTimeMillis(),
                 claudeAccent, claudeMessageBg
@@ -316,14 +322,18 @@ class ClaudeCodeRenderer(
 
     private fun addPanel(panel: JPanel) {
         panel.alignmentX = Component.LEFT_ALIGNMENT
-        container.add(panel)
-        container.add(Box.createVerticalStrut(2))
+        // Set maximum size to prevent vertical stretching
+        panel.maximumSize = Dimension(Int.MAX_VALUE, panel.preferredSize.height)
+        contentPanel.add(panel)
+        contentPanel.add(Box.createVerticalStrut(2))
+        contentPanel.revalidate()
+        contentPanel.repaint()
         container.revalidate()
         container.repaint()
     }
 
     override fun clear() {
-        container.removeAll()
+        contentPanel.removeAll()
         currentThinkingPanel = null
         currentMessagePanel = null
         thinkingBuffer.clear()
@@ -342,7 +352,7 @@ class ClaudeCodeRenderer(
     }
 
     override fun getDebugState(): String {
-        return "ClaudeCodeRenderer[$agentKey](panels=${container.componentCount})"
+        return "ClaudeCodeRenderer[$agentKey](panels=${contentPanel.componentCount})"
     }
 }
 
