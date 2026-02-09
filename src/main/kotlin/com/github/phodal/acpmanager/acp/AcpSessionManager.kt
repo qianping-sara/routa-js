@@ -519,6 +519,11 @@ class AcpSessionManager(private val project: Project) : Disposable {
         val session = getOrCreateSession(agentKey)
         session.connect(config)
         setActiveSession(agentKey)
+
+        // Always update session keys after successful connection
+        // This ensures the UI is notified even if the session already existed
+        updateSessionKeys()
+
         return session
     }
 
@@ -564,7 +569,9 @@ class AcpSessionManager(private val project: Project) : Disposable {
     }
 
     private fun updateSessionKeys() {
-        _sessionKeys.value = sessions.keys.toList()
+        val keys = sessions.keys.toList()
+        log.info("AcpSessionManager: updateSessionKeys called, keys=$keys")
+        _sessionKeys.value = keys
     }
 
     override fun dispose() {
