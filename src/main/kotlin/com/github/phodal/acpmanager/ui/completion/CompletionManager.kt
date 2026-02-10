@@ -4,6 +4,8 @@ import com.github.phodal.acpmanager.ui.mention.FileMentionProvider
 import com.github.phodal.acpmanager.ui.mention.MentionProvider
 import com.github.phodal.acpmanager.ui.mention.SymbolMentionProvider
 import com.github.phodal.acpmanager.ui.mention.TabMentionProvider
+import com.github.phodal.acpmanager.ui.slash.CommandCompletionHandler
+import com.github.phodal.acpmanager.ui.slash.SlashCommandRegistry
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBTextArea
@@ -15,13 +17,14 @@ private val log = logger<CompletionManager>()
 
 /**
  * Orchestrates completion handlers for the chat input area.
- * Manages @ mention completion and future / command completion.
+ * Manages @ mention completion and / command completion.
  */
 class CompletionManager(
     private val project: Project,
     private val inputArea: JBTextArea
 ) {
     private val mentionHandler: MentionCompletionHandler
+    private val commandHandler: CommandCompletionHandler
 
     init {
         // Initialize mention providers
@@ -32,6 +35,9 @@ class CompletionManager(
         )
 
         mentionHandler = MentionCompletionHandler(inputArea, providers)
+
+        // Initialize command handler
+        commandHandler = CommandCompletionHandler(inputArea, SlashCommandRegistry.getInstance())
 
         // Add document listener for text changes
         inputArea.document.addDocumentListener(object : DocumentListener {
@@ -56,6 +62,7 @@ class CompletionManager(
         val text = inputArea.text
         val caretPos = inputArea.caretPosition
         mentionHandler.handleTextChange(text, caretPos)
+        commandHandler.handleTextChange(text, caretPos)
     }
 
     /**
@@ -63,13 +70,15 @@ class CompletionManager(
      * Returns true if the event was consumed by a completion handler.
      */
     fun handleKeyPress(e: KeyEvent): Boolean {
-        // Try mention handler first
-        if (mentionHandler.handleKeyPress(e)) {
+        // Try command handler first (/ commands)
+        if (commandHandler.handleKeyPress(e)) {
             return true
         }
 
-        // Future: Add command handler here
-        // if (commandHandler.handleKeyPress(e)) return true
+        // Try mention handler (@ mentions)
+        if (mentionHandler.handleKeyPress(e)) {
+            return true
+        }
 
         return false
     }
@@ -79,6 +88,7 @@ class CompletionManager(
      */
     fun closeAllPopups() {
         mentionHandler.closePopup()
+        commandHandler.closePopup()
     }
 }
 
