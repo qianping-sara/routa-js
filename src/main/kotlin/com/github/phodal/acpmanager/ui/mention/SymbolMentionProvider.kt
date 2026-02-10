@@ -60,8 +60,8 @@ class SymbolMentionProvider(private val project: Project) : MentionProvider {
 
     private fun isJavaPluginAvailable(): Boolean {
         return try {
-            val javaPluginId = PluginId.getId("com.intellij.java")
-            PluginManagerCore.getPlugin(javaPluginId) != null
+            val javaPluginId = PluginId.findId("com.intellij.java")
+            javaPluginId != null && PluginManagerCore.getPlugin(javaPluginId) != null
         } catch (e: Exception) {
             log.debug("Error checking Java plugin availability: ${e.message}")
             false
