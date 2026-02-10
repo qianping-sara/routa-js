@@ -36,9 +36,12 @@ class SymbolMentionProvider(private val project: Project) : MentionProvider {
             return emptyList()
         }
 
-        val psiFile = getCurrentPsiFile() ?: return emptyList()
+        // Wrap PSI access in ReadAction to avoid PsiInvalidAccessException
+        val symbols = com.intellij.openapi.application.ReadAction.compute<List<Symbol>, Exception> {
+            val psiFile = getCurrentPsiFile() ?: return@compute emptyList()
+            extractSymbols(psiFile)
+        }
 
-        val symbols = extractSymbols(psiFile)
         val itemsWithScores = symbols
             .mapNotNull { symbol ->
                 val matchResult = FuzzyMatcher.match(symbol.name, query)
@@ -112,7 +115,8 @@ class SymbolMentionProvider(private val project: Project) : MentionProvider {
             val methods = PsiTreeUtil.findChildrenOfType(psiFile, psiMethodClass as Class<PsiElement>)
             methods.forEach { method ->
                 try {
-                    val name = method.javaClass.getMethod("getName").invoke(method) as String
+                    // Use safe cast to avoid ClassCastException if null is returned
+                    val name = method.javaClass.getMethod("getName").invoke(method) as? String ?: "Anonymous"
                     val containingClassMethod = method.javaClass.getMethod("getContainingClass")
                     val containingClass = containingClassMethod.invoke(method)
                     val containingClassName = if (containingClass != null) {
