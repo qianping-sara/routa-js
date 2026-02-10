@@ -36,6 +36,17 @@ data class ChatMessage(
     val toolCallStatus: ToolCallStatus? = null,
     val toolCallKind: String? = null,
     val isThinking: Boolean = false,
+    val references: List<MessageReference> = emptyList(),
+)
+
+/**
+ * Represents a reference to a file or symbol in a message.
+ */
+data class MessageReference(
+    val type: String,  // "file" or "symbol"
+    val displayText: String,
+    val insertText: String,
+    val metadata: Map<String, Any> = emptyMap()
 )
 
 enum class MessageRole {
@@ -246,20 +257,20 @@ class AgentSession(
     /**
      * Send a prompt message and stream responses.
      */
-    suspend fun sendMessage(text: String) {
+    suspend fun sendMessage(text: String, references: List<MessageReference> = emptyList()) {
         log.info("sendMessage called for '$agentKey' with text: ${text.take(50)}...")
 
         // Use Claude Code client if in Claude mode
         if (isClaudeCodeMode) {
-            sendMessageClaudeCode(text)
+            sendMessageClaudeCode(text, references)
             return
         }
 
         val acpClient = client ?: throw IllegalStateException("Not connected")
 
-        // Emit user message event
-        emitRenderEvent(RenderEvent.UserMessage(text))
-        addMessage(ChatMessage(MessageRole.USER, text))
+        // Emit user message event with references
+        emitRenderEvent(RenderEvent.UserMessage(text, references))
+        addMessage(ChatMessage(MessageRole.USER, text, references = references))
         updateState { copy(isProcessing = true, currentStreamingText = "", currentThinkingText = "") }
 
         // Clear dedup state
@@ -348,7 +359,7 @@ class AgentSession(
     /**
      * Send a prompt using Claude Code's stream-json protocol.
      */
-    private suspend fun sendMessageClaudeCode(text: String) {
+    private suspend fun sendMessageClaudeCode(text: String, references: List<MessageReference> = emptyList()) {
         val claudeCodeClient = claudeClient ?: throw IllegalStateException("Claude Code client not connected")
 
         updateState { copy(isProcessing = true, currentStreamingText = "", currentThinkingText = "") }

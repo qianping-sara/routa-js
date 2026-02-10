@@ -1,6 +1,7 @@
 package com.github.phodal.acpmanager.ui.renderer
 
 import com.agentclientprotocol.model.ToolCallStatus
+import com.github.phodal.acpmanager.acp.MessageReference
 
 /**
  * Render events that represent UI updates from ACP events.
@@ -14,6 +15,7 @@ sealed class RenderEvent {
      */
     data class UserMessage(
         val content: String,
+        val references: List<MessageReference> = emptyList(),
         override val timestamp: Long = System.currentTimeMillis(),
     ) : RenderEvent()
 
