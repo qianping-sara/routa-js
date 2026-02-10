@@ -27,7 +27,7 @@ class CollapsibleSection(
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
-        border = JBUI.Borders.empty(2, 0)
+        border = JBUI.Borders.empty(1, 0) // Reduced padding
         alignmentX = Component.LEFT_ALIGNMENT
 
         // Header
@@ -47,15 +47,15 @@ class CollapsibleSection(
             wrapStyleWord = true
             font = UIUtil.getLabelFont().deriveFont(font.size2D - 1)
             foreground = UIUtil.getLabelForeground()
-            border = JBUI.Borders.empty(4)
+            border = JBUI.Borders.empty(2) // Reduced padding
         }
 
         scrollPane = JBScrollPane(contentArea).apply {
             isOpaque = false
             viewport.isOpaque = false
             border = JBUI.Borders.empty()
-            preferredSize = Dimension(0, JBUI.scale(100))
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(150))
+            preferredSize = Dimension(0, JBUI.scale(80)) // Reduced height
+            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(120)) // Reduced max height
             alignmentX = Component.LEFT_ALIGNMENT
             isVisible = false
         }

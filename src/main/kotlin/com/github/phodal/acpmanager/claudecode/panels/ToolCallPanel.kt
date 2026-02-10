@@ -13,6 +13,11 @@ import javax.swing.*
  * Collapsible panel for displaying tool call information.
  * Shows tool name, status, parameters (input), and output.
  * Can be expanded to view full details.
+ *
+ * UI improvements:
+ * - Compact layout when collapsed (minimal height)
+ * - Auto-expand on completion to show output
+ * - Always visible title with status icon
  */
 class ToolCallPanel(
     private val toolName: String,
@@ -28,7 +33,13 @@ class ToolCallPanel(
     private val inputSection: CollapsibleSection
     private val outputSection: CollapsibleSection
 
+    // Summary label for compact display when collapsed
+    private val summaryLabel: JBLabel
+
     init {
+        // Use more compact border
+        border = JBUI.Borders.empty(1, 8)
+
         // Add status icon before the expand icon
         statusIcon = JBLabel("○").apply {
             foreground = headerColor
@@ -38,7 +49,7 @@ class ToolCallPanel(
 
         // Move expand icon to after status
         headerPanel.remove(headerIcon)
-        val iconPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+        val iconPanel = JPanel(FlowLayout(FlowLayout.LEFT, 2, 0)).apply {
             isOpaque = false
             add(statusIcon)
             add(headerIcon)
@@ -47,8 +58,17 @@ class ToolCallPanel(
 
         headerTitle.text = "🔧 $title"
 
-        // Input section (parameters)
+        // Summary label for showing brief output when collapsed
+        summaryLabel = JBLabel().apply {
+            foreground = UIUtil.getLabelDisabledForeground()
+            font = font.deriveFont(font.size2D - 2)
+            isVisible = false
+        }
+        headerPanel.add(summaryLabel, BorderLayout.EAST)
+
+        // Input section (parameters) - more compact
         inputSection = CollapsibleSection("📥 Input", UIUtil.getLabelDisabledForeground())
+        inputSection.isVisible = false
         contentPanel.add(inputSection)
 
         // Output section
@@ -90,6 +110,7 @@ class ToolCallPanel(
 
     /**
      * Complete the tool call with final status and output.
+     * Auto-expands the panel if there's output to show.
      */
     fun complete(status: ToolCallStatus, output: String?) {
         isCompleted = true
@@ -106,13 +127,36 @@ class ToolCallPanel(
         setHeaderColor(color)
 
         // Show output if available
-        output?.let {
-            outputSection.setContent(it)
+        if (!output.isNullOrBlank()) {
+            outputSection.setContent(output)
             outputSection.isVisible = true
+
+            // Show brief summary in header when collapsed
+            val summary = output.take(60).replace("\n", " ")
+            summaryLabel.text = if (output.length > 60) "$summary..." else summary
+            summaryLabel.foreground = color
+            summaryLabel.isVisible = !isExpanded
+
+            // Auto-expand if output is short enough to be useful
+            if (output.length < 200) {
+                isExpanded = true
+            }
+        } else {
+            // For completed without output, show "Done" summary
+            summaryLabel.text = if (status == ToolCallStatus.COMPLETED) "Done" else "Failed"
+            summaryLabel.foreground = color
+            summaryLabel.isVisible = !isExpanded
         }
 
         revalidate()
         repaint()
+        parent?.revalidate()
+    }
+
+    override fun updateExpandedState() {
+        super.updateExpandedState()
+        // Hide summary when expanded, show when collapsed
+        summaryLabel.isVisible = !isExpanded && isCompleted
     }
 
     /**

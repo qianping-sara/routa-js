@@ -31,10 +31,10 @@ abstract class BaseCollapsiblePanel(
     init {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
-        border = JBUI.Borders.empty(2, 8)
+        border = JBUI.Borders.empty(1, 8) // Reduced vertical padding for compact layout
 
         // Header panel
-        headerPanel = JPanel(BorderLayout(4, 0)).apply {
+        headerPanel = JPanel(BorderLayout(2, 0)).apply { // Reduced gap
             isOpaque = false
             alignmentX = Component.LEFT_ALIGNMENT
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
