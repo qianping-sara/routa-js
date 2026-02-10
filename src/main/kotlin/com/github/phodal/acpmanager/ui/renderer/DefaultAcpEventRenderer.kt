@@ -1,7 +1,9 @@
 package com.github.phodal.acpmanager.ui.renderer
 
 import com.agentclientprotocol.model.ToolCallStatus
+import com.github.phodal.acpmanager.ui.reference.ReferenceChipsPanel
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
@@ -69,10 +71,30 @@ class DefaultAcpEventRenderer(
     }
 
     private fun addUserMessage(event: RenderEvent.UserMessage) {
-        val panel = createMessagePanel("You", event.content, event.timestamp,
+        val wrapper = JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(4, 8)
+        }
+
+        val messagePanel = createMessagePanel("You", event.content, event.timestamp,
             JBColor(Color(0x1565C0), Color(0x64B5F6)),
             JBColor(Color(0xE3F2FD), Color(0x1A3A5C)))
-        addPanel(panel)
+        wrapper.add(messagePanel, BorderLayout.CENTER)
+
+        // Add references if present
+        if (event.references.isNotEmpty()) {
+            try {
+                val project = ProjectManager.getInstance().openProjects.firstOrNull()
+                if (project != null) {
+                    val referencesPanel = ReferenceChipsPanel(project, event.references)
+                    wrapper.add(referencesPanel, BorderLayout.SOUTH)
+                }
+            } catch (e: Exception) {
+                log.debug("Failed to create references panel: ${e.message}")
+            }
+        }
+
+        addPanel(wrapper)
     }
 
     private fun startThinking() {

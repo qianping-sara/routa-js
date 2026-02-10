@@ -2,6 +2,10 @@ package com.github.phodal.acpmanager.ui
 
 import com.github.phodal.acpmanager.acp.AcpSessionManager
 import com.github.phodal.acpmanager.config.AcpConfigService
+import com.github.phodal.acpmanager.ide.IdeAcpClient
+import com.github.phodal.acpmanager.skills.SkillDiscovery
+import com.github.phodal.acpmanager.ui.slash.BuiltinSlashCommands
+import com.github.phodal.acpmanager.ui.slash.SlashCommandRegistry
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
@@ -56,6 +60,9 @@ class AcpManagerPanel(
     // Status refresh timer
     private var statusRefreshJob: Job? = null
 
+    // Skill discovery for Claude Skills
+    private var skillDiscovery: SkillDiscovery? = null
+
     init {
         emptyPanel = createEmptyPanel()
         setContent(tabbedPane)
@@ -68,11 +75,46 @@ class AcpManagerPanel(
         val config = configService.loadConfig()
         selectedAgentKey = config.activeAgent ?: config.agents.keys.firstOrNull()
 
+        // Register built-in slash commands
+        registerBuiltinCommands()
+
+        // Initialize skill discovery
+        initializeSkillDiscovery()
+
         // Watch session changes
         startSessionObserver()
 
         // Start periodic status refresh
         startStatusRefresh()
+    }
+
+    /**
+     * Register built-in slash commands.
+     */
+    private fun registerBuiltinCommands() {
+        try {
+            val registry = SlashCommandRegistry.getInstance()
+            val ideAcpClient = IdeAcpClient.getInstance(project)
+            val builtinCommands = BuiltinSlashCommands(project, sessionManager, ideAcpClient.ideNotifications)
+            registry.registerAll(builtinCommands.getCommands())
+            log.debug("Registered ${builtinCommands.getCommands().size} built-in slash commands")
+        } catch (e: Exception) {
+            log.warn("Failed to register built-in slash commands: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Initialize skill discovery for Claude Skills.
+     */
+    private fun initializeSkillDiscovery() {
+        try {
+            val registry = SlashCommandRegistry.getInstance()
+            val projectBasePath = project.basePath ?: return
+            skillDiscovery = SkillDiscovery(projectBasePath, registry, scope)
+            log.debug("Initialized skill discovery")
+        } catch (e: Exception) {
+            log.warn("Failed to initialize skill discovery: ${e.message}", e)
+        }
     }
 
     private fun createEmptyPanel(): JPanel {
@@ -358,6 +400,7 @@ class AcpManagerPanel(
 
     override fun dispose() {
         statusRefreshJob?.cancel()
+        skillDiscovery?.dispose()
         scope.cancel()
         chatPanels.values.forEach { it.dispose() }
         chatPanels.clear()
