@@ -298,6 +298,17 @@ class DefaultAgentDispatcher(
         _state.value = DispatcherState()
     }
 
+    /**
+     * Cancel a specific task by ID.
+     */
+    suspend fun cancelTask(taskId: String) {
+        emitLog(LogLevel.WRN, "Master", taskId, "Cancelling task '$taskId'...")
+        agentExecutor.cancel(taskId)
+        taskJobs[taskId]?.cancel()
+        taskJobs.remove(taskId)
+        updateTaskStatus(taskId, AgentTaskStatus.BLOCKED)
+    }
+
     // --- Helpers ---
 
     /**

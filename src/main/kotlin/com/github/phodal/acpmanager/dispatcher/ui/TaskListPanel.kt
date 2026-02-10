@@ -6,19 +6,18 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.UIUtil
 import java.awt.*
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import javax.swing.*
 
 /**
- * Tasks panel — the middle section of the multi-agent dispatcher UI.
+ * Tasks panel — collapsible task list section of the multi-agent dispatcher UI.
  *
  * Shows:
- * - List of tasks from the plan
- * - Per-task agent assignment (editable combo box)
- * - Progress bars per task
- * - Execute button to start the plan
- * - Active agent count badge
+ * - Collapsible header (default collapsed, showing task count)
+ * - List of compact task cards with agent, progress, and output preview
+ * - Execute button + parallelism control in header
  */
 class TaskListPanel : JPanel(BorderLayout()) {
 
@@ -27,56 +26,64 @@ class TaskListPanel : JPanel(BorderLayout()) {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
     }
-    private val headerLabel = JBLabel("TASKS  0/0").apply {
+    private val headerLabel = JBLabel("▶ TASKS  0/0").apply {
         foreground = JBColor(0x8B949E, 0x8B949E)
         font = font.deriveFont(Font.BOLD, 11f)
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
     }
     private val agentBadge = JBLabel("0/0 active").apply {
         foreground = JBColor(0x8B949E, 0x8B949E)
-        font = font.deriveFont(11f)
+        font = font.deriveFont(10f)
     }
-    private val executeButton = JButton("Execute Plan").apply {
+    private val executeButton = JButton("Execute").apply {
         icon = AllIcons.Actions.Execute
         isEnabled = false
+        preferredSize = Dimension(100, 24)
     }
     private val parallelismSpinner = JSpinner(SpinnerNumberModel(1, 1, 5, 1)).apply {
-        preferredSize = Dimension(60, 28)
+        preferredSize = Dimension(50, 24)
         toolTipText = "Maximum parallel tasks"
     }
 
     var onExecute: () -> Unit = {}
     var onTaskAgentChanged: (taskId: String, newAgent: String) -> Unit = { _, _ -> }
     var onParallelismChanged: (Int) -> Unit = {}
+    var onTaskStop: (taskId: String) -> Unit = {}
 
     private var availableAgents: List<String> = emptyList()
+    private var expanded = false
+
+    private val scrollPane = JBScrollPane(tasksContainer).apply {
+        border = JBUI.Borders.empty()
+        verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+        isVisible = false
+    }
 
     init {
         isOpaque = true
         background = JBColor(0x0D1117, 0x0D1117)
         border = JBUI.Borders.compound(
             JBUI.Borders.customLineBottom(JBColor(0x21262D, 0x21262D)),
-            JBUI.Borders.empty(8, 16)
+            JBUI.Borders.empty(4, 12)
         )
 
         // Header
         val headerPanel = JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = JBUI.Borders.emptyBottom(8)
 
-            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
+            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
                 isOpaque = false
                 add(headerLabel)
                 add(JBLabel("│").apply { foreground = JBColor(0x30363D, 0x30363D) })
-                add(JBLabel(AllIcons.Nodes.MultipleTypeDefinitions))
                 add(agentBadge)
             }
             add(leftPanel, BorderLayout.WEST)
 
-            val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 0)).apply {
+            val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
                 isOpaque = false
-                add(JBLabel("Parallel:").apply {
+                add(JBLabel("P:").apply {
                     foreground = JBColor(0x8B949E, 0x8B949E)
-                    font = font.deriveFont(11f)
+                    font = font.deriveFont(10f)
                 })
                 add(parallelismSpinner)
                 add(executeButton)
@@ -84,13 +91,18 @@ class TaskListPanel : JPanel(BorderLayout()) {
             add(rightPanel, BorderLayout.EAST)
         }
         add(headerPanel, BorderLayout.NORTH)
-
-        // Scrollable tasks area
-        val scrollPane = JBScrollPane(tasksContainer).apply {
-            border = JBUI.Borders.empty()
-            verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
-        }
         add(scrollPane, BorderLayout.CENTER)
+
+        // Toggle expand/collapse
+        headerLabel.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                expanded = !expanded
+                scrollPane.isVisible = expanded
+                updateHeaderText()
+                revalidate()
+                repaint()
+            }
+        })
 
         // Wire up events
         executeButton.addActionListener { onExecute() }
@@ -113,17 +125,32 @@ class TaskListPanel : JPanel(BorderLayout()) {
             card.onAgentChanged = { newAgent ->
                 onTaskAgentChanged(task.id, newAgent)
             }
+            card.onStop = {
+                onTaskStop(task.id)
+            }
             taskCards.add(card)
             tasksContainer.add(card)
-            tasksContainer.add(Box.createVerticalStrut(4))
+            tasksContainer.add(Box.createVerticalStrut(2))
         }
 
         val done = tasks.count { it.status == AgentTaskStatus.DONE }
-        headerLabel.text = "TASKS  $done/${tasks.size}"
         executeButton.isEnabled = tasks.isNotEmpty()
+
+        updateHeaderText(done, tasks.size)
+
+        // Auto-expand when tasks appear
+        if (tasks.isNotEmpty() && !expanded) {
+            expanded = true
+            scrollPane.isVisible = true
+        }
 
         tasksContainer.revalidate()
         tasksContainer.repaint()
+    }
+
+    private fun updateHeaderText(done: Int = 0, total: Int = 0) {
+        val arrow = if (expanded) "▼" else "▶"
+        headerLabel.text = "$arrow TASKS  $done/$total"
     }
 
     fun updateActiveAgents(active: Int, total: Int) {
@@ -137,103 +164,181 @@ class TaskListPanel : JPanel(BorderLayout()) {
     fun setExecuteEnabled(enabled: Boolean) {
         executeButton.isEnabled = enabled
     }
+
+    /**
+     * Get a specific task card for updating its output preview.
+     */
+    fun getTaskCard(taskId: String): TaskCardPanel? {
+        return taskCards.find { it.taskId == taskId }
+    }
 }
 
 /**
- * A task card showing task title, assigned agent, progress, and status.
+ * A compact task card showing task title + agent on one line,
+ * progress bar, and a small output preview area.
  */
 class TaskCardPanel(
     private val task: AgentTask,
     private val availableAgents: List<String>,
 ) : JPanel(BorderLayout()) {
 
+    val taskId: String = task.id
+
     private val progressBar = JProgressBar(0, 100).apply {
         value = task.progress
-        preferredSize = Dimension(0, 4)
+        preferredSize = Dimension(0, 3)
         isStringPainted = false
         background = JBColor(0x21262D, 0x21262D)
         foreground = JBColor(0x10B981, 0x10B981)
     }
 
     private val agentCombo = JComboBox<String>().apply {
-        preferredSize = Dimension(140, 24)
+        preferredSize = Dimension(120, 20)
+        font = font.deriveFont(10f)
+    }
+
+    private val stopButton = JButton(AllIcons.Actions.Suspend).apply {
+        toolTipText = "Stop this task"
+        preferredSize = Dimension(20, 20)
+        isVisible = false
+        isBorderPainted = false
+        isContentAreaFilled = false
+    }
+
+    // Small output preview area (3 lines)
+    private val outputPreview = JTextArea(3, 40).apply {
+        isEditable = false
+        lineWrap = true
+        wrapStyleWord = true
+        background = JBColor(0x0D1117, 0x0D1117)
+        foreground = JBColor(0x8B949E, 0x8B949E)
+        font = Font("Monospaced", Font.PLAIN, 10)
+        border = JBUI.Borders.empty(2, 4)
+    }
+
+    private val outputScroll = JScrollPane(outputPreview).apply {
+        border = BorderFactory.createLineBorder(JBColor(0x21262D, 0x21262D))
+        preferredSize = Dimension(0, 48)
+        isVisible = false
     }
 
     var onAgentChanged: (String) -> Unit = {}
+    var onStop: () -> Unit = {}
 
     init {
         isOpaque = true
         background = JBColor(0x161B22, 0x161B22)
         border = JBUI.Borders.compound(
             BorderFactory.createLineBorder(JBColor(0x21262D, 0x21262D)),
-            JBUI.Borders.empty(8, 12)
+            JBUI.Borders.empty(4, 8)
         )
-        maximumSize = Dimension(Int.MAX_VALUE, 90)
 
-        // Top row: status icon + title + progress percentage
+        // Single row: status icon + title + agent combo + stop button + status text
         val topRow = JPanel(BorderLayout()).apply {
             isOpaque = false
 
-            val statusIcon = createStatusIcon(task.status)
-            val titlePanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
                 isOpaque = false
-                add(statusIcon)
+                add(createStatusIcon(task.status))
                 add(JBLabel(task.title).apply {
                     foreground = JBColor(0xC9D1D9, 0xC9D1D9)
-                    font = font.deriveFont(Font.BOLD, 13f)
+                    font = font.deriveFont(Font.BOLD, 11f)
+                })
+                add(JBLabel("·").apply { foreground = JBColor(0x30363D, 0x30363D) })
+                // Agent tag inline
+                add(createAgentTag(task.assignedAgent ?: "unassigned"))
+                add(agentCombo)
+            }
+            add(leftPanel, BorderLayout.WEST)
+
+            val rightPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0)).apply {
+                isOpaque = false
+                add(stopButton)
+                add(JBLabel(task.status.name).apply {
+                    foreground = getStatusColor(task.status)
+                    font = font.deriveFont(10f)
                 })
             }
-            add(titlePanel, BorderLayout.WEST)
-
-            val statusText = task.status.name
-            add(JBLabel(statusText).apply {
-                foreground = getStatusColor(task.status)
-                font = font.deriveFont(11f)
-            }, BorderLayout.EAST)
-        }
-
-        // Middle row: agent assignment chips
-        val agentRow = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyTop(4)
-
-            // Agent tag
-            val agentTag = createAgentTag(task.assignedAgent ?: "unassigned")
-            add(agentTag)
-
-            // Agent selector combo
-            availableAgents.forEach { agentCombo.addItem(it) }
-            task.assignedAgent?.let { agentCombo.selectedItem = it }
-            agentCombo.addActionListener {
-                val selected = agentCombo.selectedItem as? String ?: return@addActionListener
-                onAgentChanged(selected)
-            }
-            add(agentCombo)
+            add(rightPanel, BorderLayout.EAST)
         }
 
         // Layout
-        val contentPanel = JPanel(BorderLayout()).apply {
+        val contentPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            add(topRow, BorderLayout.NORTH)
-            add(agentRow, BorderLayout.CENTER)
-            add(progressBar, BorderLayout.SOUTH)
+            add(topRow)
+            add(Box.createVerticalStrut(2))
+            add(progressBar)
+            add(outputScroll)
         }
         add(contentPanel, BorderLayout.CENTER)
+
+        // Wire up
+        availableAgents.forEach { agentCombo.addItem(it) }
+        task.assignedAgent?.let { agentCombo.selectedItem = it }
+        agentCombo.addActionListener {
+            val selected = agentCombo.selectedItem as? String ?: return@addActionListener
+            onAgentChanged(selected)
+        }
+        stopButton.addActionListener { onStop() }
     }
 
     fun updateStatus(status: AgentTaskStatus, progress: Int) {
         progressBar.value = progress
+        stopButton.isVisible = status == AgentTaskStatus.RUNNING || status == AgentTaskStatus.ACTIVE
         when (status) {
-            AgentTaskStatus.RUNNING -> progressBar.foreground = JBColor(0x10B981, 0x10B981)
+            AgentTaskStatus.RUNNING, AgentTaskStatus.ACTIVE -> {
+                progressBar.foreground = JBColor(0x10B981, 0x10B981)
+                outputScroll.isVisible = true
+            }
             AgentTaskStatus.DONE -> {
                 progressBar.foreground = JBColor(0x10B981, 0x10B981)
                 progressBar.value = 100
+                stopButton.isVisible = false
             }
-            AgentTaskStatus.FAILED -> progressBar.foreground = JBColor(0xEF4444, 0xEF4444)
-            AgentTaskStatus.BLOCKED -> progressBar.foreground = JBColor(0xF59E0B, 0xF59E0B)
+            AgentTaskStatus.FAILED -> {
+                progressBar.foreground = JBColor(0xEF4444, 0xEF4444)
+                stopButton.isVisible = false
+            }
+            AgentTaskStatus.BLOCKED -> {
+                progressBar.foreground = JBColor(0xF59E0B, 0xF59E0B)
+                stopButton.isVisible = false
+            }
             else -> {}
         }
+        revalidate()
         repaint()
+    }
+
+    /**
+     * Append output text to the preview area (streaming).
+     */
+    fun appendOutput(text: String) {
+        if (!outputScroll.isVisible) {
+            outputScroll.isVisible = true
+        }
+        outputPreview.append(text)
+        // Keep only approximately the last few lines
+        val doc = outputPreview.document
+        val maxChars = 500
+        if (doc.length > maxChars) {
+            val removeLen = doc.length - maxChars
+            doc.remove(0, removeLen)
+        }
+        outputPreview.caretPosition = doc.length
+    }
+
+    /**
+     * Set the full output text in the preview area.
+     */
+    fun setOutput(text: String) {
+        if (!outputScroll.isVisible) {
+            outputScroll.isVisible = true
+        }
+        // Show last ~500 chars
+        val displayText = if (text.length > 500) "…" + text.takeLast(500) else text
+        outputPreview.text = displayText
+        outputPreview.caretPosition = outputPreview.document.length
     }
 
     private fun createStatusIcon(status: AgentTaskStatus): JBLabel {
@@ -258,13 +363,13 @@ class TaskCardPanel(
     }
 
     private fun createAgentTag(agentId: String): JPanel {
-        return JPanel(FlowLayout(FlowLayout.LEFT, 2, 0)).apply {
+        return JPanel(FlowLayout(FlowLayout.LEFT, 1, 0)).apply {
             isOpaque = true
             background = JBColor(0x1F6FEB, 0x1F6FEB)
-            border = JBUI.Borders.empty(2, 6)
-            add(JBLabel("● $agentId").apply {
+            border = JBUI.Borders.empty(1, 4)
+            add(JBLabel(agentId).apply {
                 foreground = Color.WHITE
-                font = font.deriveFont(10f)
+                font = font.deriveFont(9f)
             })
         }
     }

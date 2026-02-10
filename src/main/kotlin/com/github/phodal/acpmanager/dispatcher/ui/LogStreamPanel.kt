@@ -8,17 +8,19 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
 import java.awt.*
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.text.SimpleDateFormat
 import java.util.*
 import javax.swing.*
 
 /**
- * Log stream panel — the bottom section of the multi-agent dispatcher UI.
+ * Log stream panel — compact, collapsible bottom section of the dispatcher UI.
  *
  * Shows:
- * - Real-time log entries from all running tasks
- * - Filter by task / agent with tabs for parallel task logs
- * - Color-coded log levels (INF, WRN, ERR)
+ * - Collapsible header (click to expand/collapse)
+ * - Color-coded log entries from all tasks
+ * - Tab filtering per task
  */
 class LogStreamPanel : JPanel(BorderLayout()) {
 
@@ -27,27 +29,39 @@ class LogStreamPanel : JPanel(BorderLayout()) {
     private val taskLogAreas = mutableMapOf<String, JTextArea>()
     private val filterCombo = JComboBox<String>().apply {
         addItem("All")
-        preferredSize = Dimension(120, 24)
+        preferredSize = Dimension(100, 20)
+        font = font.deriveFont(10f)
     }
 
     private val dateFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
+    private var expanded = true
+    private val toggleLabel = JBLabel("▼ LOG").apply {
+        foreground = JBColor(0xF59E0B, 0xF59E0B)
+        font = font.deriveFont(Font.BOLD, 10f)
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    }
+
+    private val logCount = JBLabel("(0)").apply {
+        foreground = JBColor(0x6B7280, 0x6B7280)
+        font = font.deriveFont(10f)
+    }
+
+    private var totalEntries = 0
+
     init {
         isOpaque = true
         background = JBColor(0x0D1117, 0x0D1117)
-        border = JBUI.Borders.empty(4, 16, 8, 16)
+        border = JBUI.Borders.empty(2, 12, 4, 12)
 
-        // Header
+        // Compact header
         val headerPanel = JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = JBUI.Borders.emptyBottom(4)
 
-            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
                 isOpaque = false
-                add(JBLabel("⟩ LOG STREAM").apply {
-                    foreground = JBColor(0xF59E0B, 0xF59E0B)
-                    font = font.deriveFont(Font.BOLD, 11f)
-                })
+                add(toggleLabel)
+                add(logCount)
             }
             add(leftPanel, BorderLayout.WEST)
 
@@ -62,6 +76,17 @@ class LogStreamPanel : JPanel(BorderLayout()) {
         // Tabbed log panes
         tabbedPane.addTab("All", JBScrollPane(allLogsArea))
         add(tabbedPane, BorderLayout.CENTER)
+
+        // Toggle
+        toggleLabel.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                expanded = !expanded
+                tabbedPane.isVisible = expanded
+                toggleLabel.text = if (expanded) "▼ LOG" else "▶ LOG"
+                revalidate()
+                repaint()
+            }
+        })
 
         filterCombo.addActionListener {
             val selected = filterCombo.selectedItem as? String ?: return@addActionListener
@@ -79,11 +104,13 @@ class LogStreamPanel : JPanel(BorderLayout()) {
      */
     fun appendLog(entry: AgentLogEntry) {
         val formattedLine = formatLogEntry(entry)
+        totalEntries++
 
         // Append to "All" tab
         SwingUtilities.invokeLater {
             allLogsArea.append(formattedLine + "\n")
             allLogsArea.caretPosition = allLogsArea.document.length
+            logCount.text = "($totalEntries)"
         }
 
         // Append to task-specific tab if present
@@ -118,6 +145,8 @@ class LogStreamPanel : JPanel(BorderLayout()) {
             taskLogAreas.clear()
             filterCombo.removeAllItems()
             filterCombo.addItem("All")
+            totalEntries = 0
+            logCount.text = "(0)"
         }
     }
 
@@ -133,10 +162,10 @@ class LogStreamPanel : JPanel(BorderLayout()) {
         return JTextArea().apply {
             isEditable = false
             lineWrap = false
-            font = Font("Monospaced", Font.PLAIN, 11)
+            font = Font("Monospaced", Font.PLAIN, 10)
             background = JBColor(0x0D1117, 0x0D1117)
             foreground = JBColor(0x8B949E, 0x8B949E)
-            border = JBUI.Borders.empty(4)
+            border = JBUI.Borders.empty(2)
         }
     }
 }

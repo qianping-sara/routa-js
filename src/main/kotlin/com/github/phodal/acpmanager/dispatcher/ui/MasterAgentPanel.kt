@@ -4,20 +4,20 @@ import com.github.phodal.acpmanager.dispatcher.model.*
 import com.intellij.icons.AllIcons
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
-import com.intellij.util.ui.UIUtil
 import java.awt.*
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import javax.swing.*
-import javax.swing.border.EmptyBorder
 
 /**
- * Master Agent section — the top panel in the multi-agent dispatcher UI.
+ * Master Agent section — compact top panel in the multi-agent dispatcher UI.
  *
  * Shows:
- * - Master Agent selector (combo box to choose which ACP agent acts as planner)
- * - Status indicator (RUNNING, IDLE, etc.)
- * - Thinking/plan preview area
+ * - Header row: icon, title, agent selector, status  (single row)
+ * - Collapsible thinking area (default collapsed, 2-line preview)
+ * - Collapsible plan items (default collapsed)
+ * - Collapsible output area (hidden until output exists)
  */
 class MasterAgentPanel : JPanel(BorderLayout()) {
 
@@ -31,38 +31,67 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
         font = font.deriveFont(12f)
     }
 
-    private val masterAgentCombo = JComboBox<String>()
-    private val thinkingArea = JTextArea(3, 40).apply {
+    private val masterAgentCombo = JComboBox<String>().apply {
+        preferredSize = Dimension(160, 24)
+    }
+
+    // Thinking — collapsible with 1-line preview
+    private var thinkingExpanded = false
+    private val thinkingToggle = JBLabel("▶ THINKING").apply {
+        foreground = JBColor(0x6B7280, 0x6B7280)
+        font = font.deriveFont(Font.BOLD, 10f)
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    }
+    private val thinkingPreview = JBLabel("").apply {
+        foreground = JBColor(0x8B949E, 0x8B949E)
+        font = Font("Monospaced", Font.PLAIN, 11)
+    }
+    private val thinkingArea = JTextArea(2, 40).apply {
         isEditable = false
         lineWrap = true
         wrapStyleWord = true
         background = JBColor(0x1A1A2E, 0x0F0F1A)
         foreground = JBColor(0xC0C0C0, 0xA0A0A0)
-        font = Font("Monospaced", Font.PLAIN, 12)
-        border = JBUI.Borders.empty(8)
+        font = Font("Monospaced", Font.PLAIN, 11)
+        border = JBUI.Borders.empty(4)
+    }
+    private val thinkingScroll = JScrollPane(thinkingArea).apply {
+        border = BorderFactory.createLineBorder(JBColor(0x21262D, 0x21262D))
+        preferredSize = Dimension(0, 40)
+        isVisible = false
     }
 
+    // Plan items — collapsible
+    private var planExpanded = false
+    private val planToggle = JBLabel("▶ PLAN").apply {
+        foreground = JBColor(0x6B7280, 0x6B7280)
+        font = font.deriveFont(Font.BOLD, 10f)
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        isVisible = false
+    }
     private val planItemsPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
         isOpaque = false
+        isVisible = false
     }
 
-    private val resultArea = JTextArea(6, 40).apply {
+    // Result area — collapsible, hidden by default
+    private val resultArea = JTextArea(3, 40).apply {
         isEditable = false
         lineWrap = true
         wrapStyleWord = true
         background = JBColor(0x0D2818, 0x0D2818)
         foreground = JBColor(0xA7F3D0, 0xA7F3D0)
-        font = Font("Monospaced", Font.PLAIN, 12)
-        border = JBUI.Borders.empty(8)
+        font = Font("Monospaced", Font.PLAIN, 11)
+        border = JBUI.Borders.empty(4)
     }
 
-    private val resultPanel = JPanel(BorderLayout(0, 4)).apply {
+    private val resultPanel = JPanel(BorderLayout(0, 2)).apply {
         isOpaque = false
-        border = JBUI.Borders.emptyTop(8)
+        border = JBUI.Borders.emptyTop(4)
         isVisible = false
 
-        val resultLabel = JBLabel("OUTPUT").apply {
+        val resultLabel = JBLabel("▼ OUTPUT").apply {
             foreground = JBColor(0x10B981, 0x10B981)
             font = font.deriveFont(Font.BOLD, 10f)
         }
@@ -70,7 +99,7 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
 
         val resultScroll = JScrollPane(resultArea).apply {
             border = BorderFactory.createLineBorder(JBColor(0x10B981, 0x21262D))
-            preferredSize = Dimension(0, 120)
+            preferredSize = Dimension(0, 60)
         }
         add(resultScroll, BorderLayout.CENTER)
     }
@@ -82,22 +111,23 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
         background = JBColor(0x0D1117, 0x0D1117)
         border = JBUI.Borders.compound(
             JBUI.Borders.customLineBottom(JBColor(0x21262D, 0x21262D)),
-            JBUI.Borders.empty(12, 16)
+            JBUI.Borders.empty(6, 12)
         )
 
-        // Header row: icon + title + status
+        // Header row: icon + title + agent combo + status (all single line)
         val headerPanel = JPanel(BorderLayout()).apply {
             isOpaque = false
 
-            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+            val leftPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
                 isOpaque = false
                 add(JBLabel(AllIcons.Actions.Lightning).apply {
                     toolTipText = "Master Agent"
                 })
-                add(JBLabel("MASTER AGENT").apply {
+                add(JBLabel("MASTER").apply {
                     foreground = JBColor(0x58A6FF, 0x58A6FF)
-                    font = font.deriveFont(Font.BOLD, 13f)
+                    font = font.deriveFont(Font.BOLD, 12f)
                 })
+                add(masterAgentCombo)
             }
             add(leftPanel, BorderLayout.WEST)
 
@@ -110,55 +140,63 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
         }
         add(headerPanel, BorderLayout.NORTH)
 
-        // Center: thinking label + agent selector
-        val centerPanel = JPanel(BorderLayout(0, 6)).apply {
+        // Center: collapsible thinking + plan + result
+        val centerPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            border = JBUI.Borders.emptyTop(8)
+            border = JBUI.Borders.emptyTop(4)
 
-            // Thinking label
-            val thinkingLabel = JBLabel("THINKING").apply {
-                foreground = JBColor(0x6B7280, 0x6B7280)
-                font = font.deriveFont(Font.BOLD, 10f)
-            }
-            add(thinkingLabel, BorderLayout.NORTH)
-
-            // Thinking content
-            val thinkingScroll = JScrollPane(thinkingArea).apply {
-                border = BorderFactory.createLineBorder(JBColor(0x21262D, 0x21262D))
-                preferredSize = Dimension(0, 60)
-            }
-            add(thinkingScroll, BorderLayout.CENTER)
-
-            // Plan items + result area
-            val bottomPanel = JPanel().apply {
-                layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            // Thinking header row: toggle + preview
+            val thinkingHeaderRow = JPanel(BorderLayout()).apply {
                 isOpaque = false
-                add(JScrollPane(planItemsPanel).apply {
-                    border = JBUI.Borders.emptyTop(4)
-                    preferredSize = Dimension(0, 80)
-                })
-                add(resultPanel)
+                maximumSize = Dimension(Int.MAX_VALUE, 20)
+                add(thinkingToggle, BorderLayout.WEST)
+                add(thinkingPreview, BorderLayout.CENTER)
             }
-            add(bottomPanel, BorderLayout.SOUTH)
+            add(thinkingHeaderRow)
+            add(thinkingScroll)
+
+            // Plan toggle + items
+            add(Box.createVerticalStrut(2))
+            val planHeaderRow = JPanel(BorderLayout()).apply {
+                isOpaque = false
+                maximumSize = Dimension(Int.MAX_VALUE, 20)
+                add(planToggle, BorderLayout.WEST)
+            }
+            add(planHeaderRow)
+            add(planItemsPanel)
+
+            // Result/output
+            add(resultPanel)
         }
         add(centerPanel, BorderLayout.CENTER)
 
-        // Bottom: agent selector
-        val selectorPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 0)).apply {
-            isOpaque = false
-            border = JBUI.Borders.emptyTop(8)
-
-            add(JBLabel("Agent:").apply {
-                foreground = JBColor(0x8B949E, 0x8B949E)
-            })
-            masterAgentCombo.preferredSize = Dimension(200, 28)
-            masterAgentCombo.addActionListener {
-                val selected = masterAgentCombo.selectedItem as? String ?: return@addActionListener
-                onMasterAgentChanged(selected)
+        // Toggle listeners
+        thinkingToggle.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                thinkingExpanded = !thinkingExpanded
+                thinkingScroll.isVisible = thinkingExpanded
+                thinkingToggle.text = if (thinkingExpanded) "▼ THINKING" else "▶ THINKING"
+                thinkingPreview.isVisible = !thinkingExpanded
+                revalidate()
+                repaint()
             }
-            add(masterAgentCombo)
+        })
+
+        planToggle.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                planExpanded = !planExpanded
+                planItemsPanel.isVisible = planExpanded
+                planToggle.text = if (planExpanded) "▼ PLAN" else "▶ PLAN"
+                revalidate()
+                repaint()
+            }
+        })
+
+        masterAgentCombo.addActionListener {
+            val selected = masterAgentCombo.selectedItem as? String ?: return@addActionListener
+            onMasterAgentChanged(selected)
         }
-        add(selectorPanel, BorderLayout.SOUTH)
     }
 
     fun setAvailableAgents(agents: List<String>) {
@@ -188,6 +226,22 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
     fun updateThinking(text: String) {
         thinkingArea.text = text
         thinkingArea.caretPosition = 0
+        // Update the 1-line preview (truncated)
+        val preview = text.replace('\n', ' ').take(80)
+        thinkingPreview.text = if (preview.length < text.length) "  $preview…" else "  $preview"
+    }
+
+    /**
+     * Append streaming thinking text chunk.
+     */
+    fun appendThinkingChunk(chunk: String) {
+        thinkingArea.append(chunk)
+        // Update preview with latest content
+        val fullText = thinkingArea.text
+        val preview = fullText.replace('\n', ' ').take(80)
+        thinkingPreview.text = if (preview.length < fullText.length) "  $preview…" else "  $preview"
+        // Auto-scroll to bottom
+        thinkingArea.caretPosition = thinkingArea.document.length
     }
 
     fun updatePlanItems(items: List<PlanItemDisplay>) {
@@ -195,6 +249,8 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
         for (item in items) {
             planItemsPanel.add(createPlanItemRow(item))
         }
+        planToggle.isVisible = items.isNotEmpty()
+        planToggle.text = if (planExpanded) "▼ PLAN (${items.size})" else "▶ PLAN (${items.size})"
         planItemsPanel.revalidate()
         planItemsPanel.repaint()
     }
@@ -215,26 +271,27 @@ class MasterAgentPanel : JPanel(BorderLayout()) {
     private fun createPlanItemRow(item: PlanItemDisplay): JPanel {
         return JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = JBUI.Borders.empty(2, 0)
+            border = JBUI.Borders.empty(1, 0)
+            maximumSize = Dimension(Int.MAX_VALUE, 18)
 
             val statusIcon = when (item.status) {
-                "ACTIVE" -> JBLabel("●").apply { foreground = JBColor(0x10B981, 0x10B981) }
-                "BLOCKED" -> JBLabel("●").apply { foreground = JBColor(0xEF4444, 0xEF4444) }
-                "QUEUED" -> JBLabel("○").apply { foreground = JBColor(0x6B7280, 0x6B7280) }
-                "DONE" -> JBLabel("✓").apply { foreground = JBColor(0x10B981, 0x10B981) }
-                else -> JBLabel("○").apply { foreground = JBColor(0x6B7280, 0x6B7280) }
+                "ACTIVE", "RUNNING" -> JBLabel("●").apply { foreground = JBColor(0x10B981, 0x10B981); font = font.deriveFont(8f) }
+                "BLOCKED" -> JBLabel("●").apply { foreground = JBColor(0xEF4444, 0xEF4444); font = font.deriveFont(8f) }
+                "QUEUED" -> JBLabel("○").apply { foreground = JBColor(0x6B7280, 0x6B7280); font = font.deriveFont(8f) }
+                "DONE" -> JBLabel("✓").apply { foreground = JBColor(0x10B981, 0x10B981); font = font.deriveFont(10f) }
+                else -> JBLabel("○").apply { foreground = JBColor(0x6B7280, 0x6B7280); font = font.deriveFont(8f) }
             }
 
-            val labelPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+            val labelPanel = JPanel(FlowLayout(FlowLayout.LEFT, 3, 0)).apply {
                 isOpaque = false
-                add(JBLabel("${item.index}").apply {
+                add(JBLabel(item.index).apply {
                     foreground = JBColor(0x6B7280, 0x6B7280)
-                    font = font.deriveFont(11f)
+                    font = font.deriveFont(10f)
                 })
                 add(statusIcon)
                 add(JBLabel(item.text).apply {
                     foreground = JBColor(0xC9D1D9, 0xC9D1D9)
-                    font = font.deriveFont(12f)
+                    font = font.deriveFont(11f)
                 })
             }
             add(labelPanel, BorderLayout.CENTER)
