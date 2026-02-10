@@ -89,13 +89,14 @@ sealed class IdeNotification {
  * Diagnostic severity levels, matching IntelliJ's HighlightSeverity.
  */
 enum class DiagnosticSeverity {
-    ERROR, WARNING, WEAK_WARNING, INFO;
+    ERROR, WARNING, WEAK_WARNING, INFO, HINT;
 
     companion object {
         fun from(name: String): DiagnosticSeverity = when (name.uppercase()) {
             "ERROR" -> ERROR
             "WARNING" -> WARNING
             "WEAK_WARNING", "WEAK WARNING" -> WEAK_WARNING
+            "HINT" -> HINT
             else -> INFO
         }
     }

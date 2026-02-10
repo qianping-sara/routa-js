@@ -360,8 +360,9 @@ class IdeTools(private val project: Project) {
      * Mirrors Claude Code's DiagnosticTools.getDiagnostics.
      *
      * @param uri File URI or path. If null, uses the currently active editor.
+     * @param severity Optional severity filter. If provided, only returns diagnostics with this severity or higher.
      */
-    suspend fun getDiagnostics(uri: String?): ToolCallResult {
+    suspend fun getDiagnostics(uri: String?, severity: String? = null): ToolCallResult {
         val projectDir = getProjectDir() ?: return ToolCallResult.error("Project directory not found")
         if (!project.isOpen) return ToolCallResult.error("Project is closed")
 
@@ -401,11 +402,25 @@ class IdeTools(private val project: Project) {
                             val document = psiFile.fileDocument
                             val diagnostics = mutableListOf<DiagnosticItem>()
 
+                            // Determine minimum severity level for filtering
+                            val minSeverity = if (severity != null) {
+                                DiagnosticSeverity.from(severity)
+                            } else {
+                                DiagnosticSeverity.HINT // Include all by default
+                            }
+
                             DaemonCodeAnalyzerEx.processHighlights(
                                 document, project, HighlightSeverity.WEAK_WARNING,
                                 0, document.textLength
                             ) { info: HighlightInfo ->
                                 val description = info.description ?: return@processHighlights true
+
+                                val diagnosticSeverity = DiagnosticSeverity.from(info.severity.name)
+
+                                // Filter by severity if requested
+                                if (severity != null && !shouldIncludeSeverity(diagnosticSeverity, minSeverity)) {
+                                    return@processHighlights true
+                                }
 
                                 val lineStart = document.getLineNumber(info.startOffset)
                                 val columnStart = info.startOffset - document.getLineStartOffset(lineStart)
@@ -415,7 +430,7 @@ class IdeTools(private val project: Project) {
                                 diagnostics.add(
                                     DiagnosticItem(
                                         message = description,
-                                        severity = DiagnosticSeverity.from(info.severity.name).name,
+                                        severity = diagnosticSeverity.name,
                                         startLine = lineStart,
                                         startColumn = columnStart,
                                         endLine = lineEnd,
@@ -445,6 +460,23 @@ class IdeTools(private val project: Project) {
     }
 
     // ===== Helpers =====
+
+    /**
+     * Determine if a diagnostic severity should be included based on the minimum severity filter.
+     * Severity hierarchy (highest to lowest): ERROR > WARNING > WEAK_WARNING > INFO > HINT
+     */
+    private fun shouldIncludeSeverity(diagnosticSeverity: DiagnosticSeverity, minSeverity: DiagnosticSeverity): Boolean {
+        val severityOrder = listOf(
+            DiagnosticSeverity.ERROR,
+            DiagnosticSeverity.WARNING,
+            DiagnosticSeverity.WEAK_WARNING,
+            DiagnosticSeverity.INFO,
+            DiagnosticSeverity.HINT
+        )
+        val diagnosticIndex = severityOrder.indexOf(diagnosticSeverity)
+        val minIndex = severityOrder.indexOf(minSeverity)
+        return diagnosticIndex <= minIndex
+    }
 
     /**
      * Close diff editor tabs by matching the tab name against diff request names.
