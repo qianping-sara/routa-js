@@ -162,13 +162,13 @@ class IdeaRoutaService(private val project: Project) : Disposable {
 
         log.info("IdeaRoutaService initialized: crafter=$crafterAgent, routa=$routaAgent, gate=$gateAgent")
 
-        // Pre-connect the crafter session to start MCP server if using Claude Code
+        // Pre-connect a crafter session to start MCP server for coordination tools
         scope.launch {
             try {
                 val configService = AcpConfigService.getInstance(project)
                 val crafterConfig = configService.getAgentConfig(crafterAgent)
-                if (crafterConfig?.isClaudeCode() == true) {
-                    log.info("Pre-connecting Claude Code session to start MCP server...")
+                if (crafterConfig != null) {
+                    log.info("Pre-connecting crafter session to start MCP server...")
                     val sessionManager = AcpSessionManager.getInstance(project)
                     val sessionKey = "routa-mcp-crafter"
                     val session = sessionManager.getOrCreateSession(sessionKey)
@@ -178,11 +178,15 @@ class IdeaRoutaService(private val project: Project) : Disposable {
                         delay(500)
                         // Refresh MCP URL immediately
                         _mcpServerUrl.value = session.mcpServerUrl
-                        log.info("MCP server started at: ${session.mcpServerUrl}")
+                        if (session.mcpServerUrl != null) {
+                            log.info("MCP server started at: ${session.mcpServerUrl}")
+                        } else {
+                            log.info("Session connected, but no MCP server (only Claude Code starts MCP server)")
+                        }
                     }
                 }
             } catch (e: Exception) {
-                log.warn("Failed to pre-connect Claude Code session: ${e.message}", e)
+                log.warn("Failed to pre-connect crafter session: ${e.message}", e)
             }
         }
     }

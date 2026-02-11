@@ -6,6 +6,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -102,10 +104,148 @@ class RoutaKoogToolsTest {
     }
 
     @Test
-    fun `RoutaToolRegistry creates all 6 tools`() = withRouta { routa ->
+    fun `RoutaToolRegistry creates all 10 tools`() = withRouta { routa ->
         val registry = RoutaToolRegistry.create(routa.tools, "test-workspace")
 
         // Verify the registry was created successfully (no exceptions)
         assertNotNull(registry)
+    }
+
+    // ── Tests for new task-agent lifecycle tools ──
+
+    @Test
+    fun `WakeOrCreateTaskAgentTool creates a new agent for a task`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        // Create a task first
+        val task = com.phodal.routa.core.model.Task(
+            id = "task-1",
+            title = "Test Task",
+            objective = "Do something",
+            workspaceId = "test-workspace",
+            createdAt = java.time.Instant.now().toString(),
+            updatedAt = java.time.Instant.now().toString(),
+        )
+        routa.context.taskStore.save(task)
+
+        val tool = WakeOrCreateTaskAgentTool(routa.tools, "test-workspace")
+        val result = tool.execute(
+            WakeOrCreateTaskAgentArgs(
+                taskId = "task-1",
+                contextMessage = "Start working on this task",
+                callerAgentId = routaId,
+            )
+        )
+
+        assertTrue("Expected 'created_new' in: $result", result.contains("created_new"))
+        assertTrue("Expected agent ID in: $result", result.contains("agentId"))
+    }
+
+    @Test
+    fun `WakeOrCreateTaskAgentTool wakes an existing agent`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        // Create a crafter agent
+        val crafterResult = routa.tools.createAgent(
+            name = "test-crafter",
+            role = AgentRole.CRAFTER,
+            workspaceId = "test-workspace",
+            parentId = routaId,
+        )
+        assertTrue(crafterResult.success)
+        val crafterId = kotlinx.serialization.json.Json.parseToJsonElement(crafterResult.data)
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        // Create a task and assign the crafter to it
+        val task = com.phodal.routa.core.model.Task(
+            id = "task-2",
+            title = "Test Task 2",
+            objective = "Do something else",
+            assignedTo = crafterId,
+            status = com.phodal.routa.core.model.TaskStatus.IN_PROGRESS,
+            workspaceId = "test-workspace",
+            createdAt = java.time.Instant.now().toString(),
+            updatedAt = java.time.Instant.now().toString(),
+        )
+        routa.context.taskStore.save(task)
+
+        // Wake the agent
+        val tool = WakeOrCreateTaskAgentTool(routa.tools, "test-workspace")
+        val result = tool.execute(
+            WakeOrCreateTaskAgentArgs(
+                taskId = "task-2",
+                contextMessage = "Continue working on this",
+                callerAgentId = routaId,
+            )
+        )
+
+        assertTrue("Expected 'woke_existing' in: $result", result.contains("woke_existing"))
+        assertTrue("Expected crafter ID in: $result", result.contains(crafterId))
+    }
+
+    @Test
+    fun `SendMessageToTaskAgentTool sends message to assigned agent`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        // Create a crafter and assign to a task
+        val crafterResult = routa.tools.createAgent(
+            name = "test-crafter",
+            role = AgentRole.CRAFTER,
+            workspaceId = "test-workspace",
+            parentId = routaId,
+        )
+        val crafterId = kotlinx.serialization.json.Json.parseToJsonElement(crafterResult.data)
+            .jsonObject["id"]!!.jsonPrimitive.content
+
+        val task = com.phodal.routa.core.model.Task(
+            id = "task-3",
+            title = "Test Task 3",
+            objective = "Do something",
+            assignedTo = crafterId,
+            workspaceId = "test-workspace",
+            createdAt = java.time.Instant.now().toString(),
+            updatedAt = java.time.Instant.now().toString(),
+        )
+        routa.context.taskStore.save(task)
+
+        // Send message to task agent
+        val tool = SendMessageToTaskAgentTool(routa.tools)
+        val result = tool.execute(
+            SendMessageToTaskAgentArgs(
+                taskId = "task-3",
+                message = "Please fix the tests",
+                callerAgentId = routaId,
+            )
+        )
+
+        assertTrue("Expected 'sent' in: $result", result.contains("sent"))
+        assertTrue("Expected task ID in: $result", result.contains("task-3"))
+    }
+
+    @Test
+    fun `GetAgentStatusTool returns agent status`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        val tool = GetAgentStatusTool(routa.tools)
+        val result = tool.execute(GetAgentStatusArgs(agentId = routaId))
+
+        assertTrue("Expected agent name in: $result", result.contains("routa-main"))
+        assertTrue("Expected 'ROUTA' role in: $result", result.contains("ROUTA"))
+        assertTrue("Expected 'ACTIVE' status in: $result", result.contains("ACTIVE"))
+    }
+
+    @Test
+    fun `GetAgentSummaryTool returns agent summary`() = withRouta { routa ->
+        val routaId = routa.coordinator.initialize("test-workspace")
+
+        // Add a message to the agent
+        routa.tools.messageAgent(routaId, routaId, "Test message for summary")
+
+        val tool = GetAgentSummaryTool(routa.tools)
+        val result = tool.execute(GetAgentSummaryArgs(agentId = routaId))
+
+        assertTrue("Expected 'Agent Summary' in: $result", result.contains("Agent Summary"))
+        assertTrue("Expected agent name in: $result", result.contains("routa-main"))
+        assertTrue("Expected 'Messages:' in: $result", result.contains("Messages:"))
     }
 }

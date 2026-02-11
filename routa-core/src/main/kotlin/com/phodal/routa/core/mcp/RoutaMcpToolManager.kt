@@ -9,7 +9,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.*
 import kotlinx.serialization.json.*
 
 /**
- * Registers the 6 Routa coordination tools with an MCP [Server].
+ * Registers the 10 Routa coordination tools with an MCP [Server].
  *
  * This exposes the coordination tools over the Model Context Protocol,
  * allowing any MCP-compatible client (e.g., Claude, Cursor, VS Code)
@@ -27,15 +27,21 @@ class RoutaMcpToolManager(
 ) {
 
     /**
-     * Register all 6 coordination tools with the MCP server.
+     * Register all 10 coordination tools with the MCP server.
      */
     fun registerTools(server: Server) {
+        // Core coordination tools
         registerListAgents(server)
         registerReadAgentConversation(server)
         registerCreateAgent(server)
         registerDelegateTask(server)
         registerMessageAgent(server)
         registerReportToParent(server)
+        // Task-agent lifecycle tools
+        registerWakeOrCreateTaskAgent(server)
+        registerSendMessageToTaskAgent(server)
+        registerGetAgentStatus(server)
+        registerGetAgentSummary(server)
     }
 
     private fun registerListAgents(server: Server) {
@@ -282,6 +288,142 @@ class RoutaMcpToolManager(
             }
 
             val result = agentTools.reportToParent(agentId, report)
+            toCallToolResult(result)
+        }
+    }
+
+    private fun registerWakeOrCreateTaskAgent(server: Server) {
+        server.addTool(
+            name = "wake_or_create_task_agent",
+            description = "Wake an existing agent or create a new one for a task. " +
+                "Checks if the task has an active/pending agent and wakes it with the context message. " +
+                "If no viable agent, creates a new Crafter and assigns it. " +
+                "Use when task dependencies become ready.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("taskId") {
+                        put("type", "string")
+                        put("description", "ID of the task to wake or create an agent for")
+                    }
+                    putJsonObject("contextMessage") {
+                        put("type", "string")
+                        put("description", "Message with synthesized context from completed dependencies")
+                    }
+                    putJsonObject("callerAgentId") {
+                        put("type", "string")
+                        put("description", "ID of the calling agent (for auditing)")
+                    }
+                    putJsonObject("agentName") {
+                        put("type", "string")
+                        put("description", "Optional custom name for a new agent")
+                    }
+                    putJsonObject("modelTier") {
+                        put("type", "string")
+                        put("description", "Model tier for a new agent: SMART or FAST (optional)")
+                        putJsonArray("enum") {
+                            add("SMART"); add("FAST")
+                        }
+                    }
+                },
+                required = listOf("taskId", "contextMessage", "callerAgentId")
+            )
+        ) { request ->
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val modelTierStr = args["modelTier"]?.jsonPrimitive?.contentOrNull
+            val modelTier = modelTierStr?.let {
+                try {
+                    com.phodal.routa.core.model.ModelTier.valueOf(it.uppercase())
+                } catch (e: IllegalArgumentException) { null }
+            }
+
+            val result = agentTools.wakeOrCreateTaskAgent(
+                taskId = args["taskId"]!!.jsonPrimitive.content,
+                contextMessage = args["contextMessage"]!!.jsonPrimitive.content,
+                callerAgentId = args["callerAgentId"]!!.jsonPrimitive.content,
+                workspaceId = defaultWorkspaceId,
+                agentName = args["agentName"]?.jsonPrimitive?.contentOrNull,
+                modelTier = modelTier,
+            )
+            toCallToolResult(result)
+        }
+    }
+
+    private fun registerSendMessageToTaskAgent(server: Server) {
+        server.addTool(
+            name = "send_message_to_task_agent",
+            description = "Send a message to the agent working on a specific task. " +
+                "More convenient than send_message_to_agent — you only need the task ID. " +
+                "Use to ask corrections, provide context, or request changes.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("taskId") {
+                        put("type", "string")
+                        put("description", "ID of the task whose agent should receive the message")
+                    }
+                    putJsonObject("message") {
+                        put("type", "string")
+                        put("description", "The message content. Be specific about what changes or corrections you need.")
+                    }
+                    putJsonObject("callerAgentId") {
+                        put("type", "string")
+                        put("description", "ID of the sending agent")
+                    }
+                },
+                required = listOf("taskId", "message", "callerAgentId")
+            )
+        ) { request ->
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val result = agentTools.sendMessageToTaskAgent(
+                taskId = args["taskId"]!!.jsonPrimitive.content,
+                message = args["message"]!!.jsonPrimitive.content,
+                callerAgentId = args["callerAgentId"]!!.jsonPrimitive.content,
+            )
+            toCallToolResult(result)
+        }
+    }
+
+    private fun registerGetAgentStatus(server: Server) {
+        server.addTool(
+            name = "get_agent_status",
+            description = "Get detailed status of a specific agent including current status, " +
+                "role, message count, assigned tasks, and timestamps.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("agentId") {
+                        put("type", "string")
+                        put("description", "ID of the agent to check")
+                    }
+                },
+                required = listOf("agentId")
+            )
+        ) { request ->
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val result = agentTools.getAgentStatus(
+                agentId = args["agentId"]!!.jsonPrimitive.content,
+            )
+            toCallToolResult(result)
+        }
+    }
+
+    private fun registerGetAgentSummary(server: Server) {
+        server.addTool(
+            name = "get_agent_summary",
+            description = "Get a summary of what an agent did. Returns status, last response, " +
+                "tool call counts, and assigned tasks. Quick overview before reading full conversation.",
+            inputSchema = ToolSchema(
+                properties = buildJsonObject {
+                    putJsonObject("agentId") {
+                        put("type", "string")
+                        put("description", "ID of the agent to summarize")
+                    }
+                },
+                required = listOf("agentId")
+            )
+        ) { request ->
+            val args = request.arguments ?: JsonObject(emptyMap())
+            val result = agentTools.getAgentSummary(
+                agentId = args["agentId"]!!.jsonPrimitive.content,
+            )
             toCallToolResult(result)
         }
     }

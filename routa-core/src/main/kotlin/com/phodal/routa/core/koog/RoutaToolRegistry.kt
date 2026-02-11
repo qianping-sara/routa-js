@@ -21,19 +21,25 @@ import com.phodal.routa.core.tool.AgentTools
 object RoutaToolRegistry {
 
     /**
-     * Create a [ToolRegistry] with all 6 Routa coordination tools.
+     * Create a [ToolRegistry] with all 10 Routa coordination tools.
      *
      * @param agentTools The underlying AgentTools implementation.
      * @param workspaceId Default workspace ID for tools that need it.
      */
     fun create(agentTools: AgentTools, workspaceId: String): ToolRegistry {
         return ToolRegistry {
+            // Core coordination tools
             tool(ListAgentsTool(agentTools, workspaceId))
             tool(ReadAgentConversationTool(agentTools))
             tool(CreateAgentTool(agentTools, workspaceId))
             tool(DelegateTaskTool(agentTools))
             tool(MessageAgentTool(agentTools))
             tool(ReportToParentTool(agentTools))
+            // Task-agent lifecycle tools
+            tool(WakeOrCreateTaskAgentTool(agentTools, workspaceId))
+            tool(SendMessageToTaskAgentTool(agentTools))
+            tool(GetAgentStatusTool(agentTools))
+            tool(GetAgentSummaryTool(agentTools))
         }
     }
 }

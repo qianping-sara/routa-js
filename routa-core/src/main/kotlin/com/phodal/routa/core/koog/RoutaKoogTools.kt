@@ -9,7 +9,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 
 /**
- * Koog-compatible [SimpleTool] wrappers for the 6 Routa coordination tools.
+ * Koog-compatible [SimpleTool] wrappers for the 10 Routa coordination tools.
  *
  * These tools can be registered in a Koog [ai.koog.agents.core.tools.ToolRegistry]
  * and used by Koog-powered agents to coordinate multi-agent workflows.
@@ -23,6 +23,10 @@ import kotlinx.serialization.Serializable
  *     tool(DelegateTaskTool(agentTools))
  *     tool(MessageAgentTool(agentTools))
  *     tool(ReportToParentTool(agentTools))
+ *     tool(WakeOrCreateTaskAgentTool(agentTools, workspaceId))
+ *     tool(SendMessageToTaskAgentTool(agentTools))
+ *     tool(GetAgentStatusTool(agentTools))
+ *     tool(GetAgentSummaryTool(agentTools))
  * }
  * ```
  */
@@ -211,6 +215,122 @@ class ReportToParentTool(
             success = args.success,
         )
         val result = agentTools.reportToParent(args.agentId, report)
+        return if (result.success) result.data else "Error: ${result.error}"
+    }
+}
+
+// ── wake_or_create_task_agent ──────────────────────────────────────────
+
+@Serializable
+data class WakeOrCreateTaskAgentArgs(
+    val taskId: String,
+    val contextMessage: String,
+    val callerAgentId: String,
+    val agentName: String? = null,
+    val modelTier: String? = null,
+)
+
+class WakeOrCreateTaskAgentTool(
+    private val agentTools: AgentTools,
+    private val defaultWorkspaceId: String,
+) : SimpleTool<WakeOrCreateTaskAgentArgs>(
+    argsSerializer = WakeOrCreateTaskAgentArgs.serializer(),
+    name = "wake_or_create_task_agent",
+    description = "Wake an existing agent or create a new one for a task. " +
+        "Checks if the task has an active/pending agent and wakes it with the context message. " +
+        "If no viable agent exists, creates a new Crafter agent and assigns it to the task. " +
+        "Use this when task dependencies become ready and you need to ensure an agent is working on it.",
+) {
+    override suspend fun execute(args: WakeOrCreateTaskAgentArgs): String {
+        val modelTier = args.modelTier?.let {
+            try {
+                ModelTier.valueOf(it.uppercase())
+            } catch (e: IllegalArgumentException) {
+                return "Error: Invalid modelTier '${args.modelTier}'. Must be SMART or FAST"
+            }
+        }
+
+        val result = agentTools.wakeOrCreateTaskAgent(
+            taskId = args.taskId,
+            contextMessage = args.contextMessage,
+            callerAgentId = args.callerAgentId,
+            workspaceId = defaultWorkspaceId,
+            agentName = args.agentName,
+            modelTier = modelTier,
+        )
+        return if (result.success) result.data else "Error: ${result.error}"
+    }
+}
+
+// ── send_message_to_task_agent ─────────────────────────────────────────
+
+@Serializable
+data class SendMessageToTaskAgentArgs(
+    val taskId: String,
+    val message: String,
+    val callerAgentId: String,
+)
+
+class SendMessageToTaskAgentTool(
+    private val agentTools: AgentTools,
+) : SimpleTool<SendMessageToTaskAgentArgs>(
+    argsSerializer = SendMessageToTaskAgentArgs.serializer(),
+    name = "send_message_to_task_agent",
+    description = "Send a message to the agent working on a specific task. " +
+        "More convenient than send_message_to_agent because you only need the task ID, " +
+        "not the agent ID. Use this to ask a task agent to make corrections, " +
+        "provide additional context, or request changes.",
+) {
+    override suspend fun execute(args: SendMessageToTaskAgentArgs): String {
+        val result = agentTools.sendMessageToTaskAgent(
+            taskId = args.taskId,
+            message = args.message,
+            callerAgentId = args.callerAgentId,
+        )
+        return if (result.success) result.data else "Error: ${result.error}"
+    }
+}
+
+// ── get_agent_status ───────────────────────────────────────────────────
+
+@Serializable
+data class GetAgentStatusArgs(
+    val agentId: String,
+)
+
+class GetAgentStatusTool(
+    private val agentTools: AgentTools,
+) : SimpleTool<GetAgentStatusArgs>(
+    argsSerializer = GetAgentStatusArgs.serializer(),
+    name = "get_agent_status",
+    description = "Get detailed status of a specific agent including its current status, " +
+        "role, message count, assigned tasks, and timestamps. " +
+        "Use this to check on a delegated agent's progress.",
+) {
+    override suspend fun execute(args: GetAgentStatusArgs): String {
+        val result = agentTools.getAgentStatus(args.agentId)
+        return if (result.success) result.data else "Error: ${result.error}"
+    }
+}
+
+// ── get_agent_summary ──────────────────────────────────────────────────
+
+@Serializable
+data class GetAgentSummaryArgs(
+    val agentId: String,
+)
+
+class GetAgentSummaryTool(
+    private val agentTools: AgentTools,
+) : SimpleTool<GetAgentSummaryArgs>(
+    argsSerializer = GetAgentSummaryArgs.serializer(),
+    name = "get_agent_summary",
+    description = "Get a summary of what an agent did. Returns agent status, " +
+        "last response, tool call counts, and assigned tasks. " +
+        "Use this for a quick overview before reading the full conversation.",
+) {
+    override suspend fun execute(args: GetAgentSummaryArgs): String {
+        val result = agentTools.getAgentSummary(args.agentId)
         return if (result.success) result.data else "Error: ${result.error}"
     }
 }

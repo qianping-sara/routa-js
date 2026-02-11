@@ -12,7 +12,7 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * The 6 agent coordination tools that enable multi-agent collaboration.
+ * The 10 agent coordination tools that enable multi-agent collaboration.
  *
  * These tools are designed to be exposed via MCP (Model Context Protocol) so that
  * LLM-powered agents can call them during their conversation turns.
@@ -21,13 +21,19 @@ import java.util.UUID
  * implementation analysis, waiting is handled via event subscriptions internally, not as a
  * user-facing tool.
  *
- * Mapping from Issue #21:
+ * Core tools (from Issue #21):
  * - list_agents() → [listAgents]
  * - read_agent_conversation() → [readAgentConversation]
  * - create_agent() → [createAgent]
  * - delegate() → [delegate]
  * - message_agent() → [messageAgent]
  * - report_to_parent() → [reportToParent]
+ *
+ * Task-agent lifecycle tools:
+ * - wake_or_create_task_agent() → [wakeOrCreateTaskAgent]
+ * - send_message_to_task_agent() → [sendMessageToTaskAgent]
+ * - get_agent_status() → [getAgentStatus]
+ * - get_agent_summary() → [getAgentSummary]
  */
 class AgentTools(
     private val agentStore: AgentStore,
@@ -303,5 +309,298 @@ class AgentTools(
         return ToolResult.ok(
             """{"reported": true, "to": "${parentAgent.name}", "taskId": "${report.taskId}"}"""
         )
+    }
+
+    // ── Task-Agent Lifecycle Tools ──────────────────────────────────────
+
+    /**
+     * Wake an existing agent or create a new one for a task.
+     *
+     * Resolution strategy:
+     * 1. Look up the task to find its assignedTo agent
+     * 2. Check the agent's status (most recent assignment)
+     * 3. If the agent is ACTIVE or PENDING: send the context message (wake)
+     * 4. If no viable agent: create a new Crafter, assign it to the task, and start it
+     *
+     * This is the core primitive for task orchestration — when a task's
+     * dependencies become ready, the coordinator calls this to ensure
+     * an agent is working on it.
+     *
+     * @param taskId The task to wake or create an agent for.
+     * @param contextMessage Message with synthesized context from completed dependencies.
+     * @param callerAgentId The agent calling this tool (for auditing).
+     * @param workspaceId The workspace this task belongs to.
+     * @param agentName Optional custom name for a new agent.
+     * @param modelTier Optional model tier for a new agent.
+     */
+    suspend fun wakeOrCreateTaskAgent(
+        taskId: String,
+        contextMessage: String,
+        callerAgentId: String,
+        workspaceId: String,
+        agentName: String? = null,
+        modelTier: ModelTier? = null,
+    ): ToolResult {
+        val task = taskStore.get(taskId)
+            ?: return ToolResult.fail("Task not found: $taskId")
+
+        // Try to wake an existing agent
+        val assignedAgentId = task.assignedTo
+        if (assignedAgentId != null) {
+            val agent = agentStore.get(assignedAgentId)
+            if (agent != null && (agent.status == AgentStatus.ACTIVE || agent.status == AgentStatus.PENDING)) {
+                // Agent is alive — send it the context message
+                val now = Instant.now().toString()
+                val msg = Message(
+                    id = UUID.randomUUID().toString(),
+                    agentId = assignedAgentId,
+                    role = MessageRole.USER,
+                    content = "[Task Wake from ${callerAgentId}]: $contextMessage",
+                    timestamp = now,
+                )
+                conversationStore.append(msg)
+                eventBus.emit(AgentEvent.MessageReceived(callerAgentId, assignedAgentId, contextMessage))
+
+                return ToolResult.ok(
+                    json.encodeToString(
+                        mapOf(
+                            "action" to "woke_existing",
+                            "agentId" to assignedAgentId,
+                            "agentName" to agent.name,
+                            "agentStatus" to agent.status.name,
+                            "taskId" to taskId,
+                        )
+                    )
+                )
+            }
+        }
+
+        // No viable agent found — create a new one
+        val now = Instant.now().toString()
+        val newAgentName = agentName ?: "crafter-${task.title.take(40).replace("\\s+".toRegex(), "-").lowercase()}"
+        val newAgent = Agent(
+            id = UUID.randomUUID().toString(),
+            name = newAgentName,
+            role = AgentRole.CRAFTER,
+            modelTier = modelTier ?: AgentRole.CRAFTER.defaultModelTier,
+            workspaceId = workspaceId,
+            parentId = callerAgentId,
+            status = AgentStatus.ACTIVE,
+            createdAt = now,
+            updatedAt = now,
+            metadata = mapOf("taskId" to taskId),
+        )
+        agentStore.save(newAgent)
+
+        // Assign agent to task
+        val updatedTask = task.copy(
+            assignedTo = newAgent.id,
+            status = TaskStatus.IN_PROGRESS,
+            updatedAt = now,
+        )
+        taskStore.save(updatedTask)
+
+        // Send the initial context message
+        conversationStore.append(
+            Message(
+                id = UUID.randomUUID().toString(),
+                agentId = newAgent.id,
+                role = MessageRole.USER,
+                content = contextMessage,
+                timestamp = now,
+            )
+        )
+
+        // Emit events
+        eventBus.emit(AgentEvent.AgentCreated(newAgent.id, workspaceId, callerAgentId))
+        eventBus.emit(AgentEvent.TaskDelegated(taskId, newAgent.id, callerAgentId))
+        eventBus.emit(AgentEvent.TaskStatusChanged(taskId, task.status, TaskStatus.IN_PROGRESS))
+
+        return ToolResult.ok(
+            json.encodeToString(
+                mapOf(
+                    "action" to "created_new",
+                    "agentId" to newAgent.id,
+                    "agentName" to newAgent.name,
+                    "taskId" to taskId,
+                    "taskTitle" to task.title,
+                )
+            )
+        )
+    }
+
+    /**
+     * Send a message to the agent currently assigned to a task.
+     *
+     * This is a higher-level convenience over [messageAgent] — you only
+     * need the task ID, not the agent ID. The tool automatically finds
+     * which agent is assigned.
+     *
+     * Use this when you want to ask a task agent to make corrections,
+     * provide additional context, or request changes to their work.
+     *
+     * @param taskId The task whose assigned agent should receive the message.
+     * @param message The message content.
+     * @param callerAgentId The sending agent.
+     */
+    suspend fun sendMessageToTaskAgent(
+        taskId: String,
+        message: String,
+        callerAgentId: String,
+    ): ToolResult {
+        val task = taskStore.get(taskId)
+            ?: return ToolResult.fail("Task not found: $taskId")
+
+        val assignedAgentId = task.assignedTo
+            ?: return ToolResult.fail("Task '${task.title}' has no agent assigned. Use delegate or wake_or_create_task_agent first.")
+
+        val assignedAgent = agentStore.get(assignedAgentId)
+            ?: return ToolResult.fail("Assigned agent not found: $assignedAgentId")
+
+        val callerAgent = agentStore.get(callerAgentId)
+
+        // Record the message in the recipient's conversation
+        val now = Instant.now().toString()
+        val callerName = callerAgent?.name ?: callerAgentId
+        val msg = Message(
+            id = UUID.randomUUID().toString(),
+            agentId = assignedAgentId,
+            role = MessageRole.USER,
+            content = "[From $callerName]: $message",
+            timestamp = now,
+        )
+        conversationStore.append(msg)
+
+        // Emit event
+        eventBus.emit(AgentEvent.MessageReceived(callerAgentId, assignedAgentId, message))
+
+        return ToolResult.ok(
+            json.encodeToString(
+                mapOf(
+                    "sent" to "true",
+                    "toAgentId" to assignedAgentId,
+                    "toAgentName" to assignedAgent.name,
+                    "taskId" to taskId,
+                    "taskTitle" to task.title,
+                )
+            )
+        )
+    }
+
+    /**
+     * Get detailed status of a specific agent.
+     *
+     * Returns the agent's current status, message count, task assignment,
+     * and timestamps. Use this to check on a delegated agent's progress
+     * before deciding whether to read the full conversation.
+     *
+     * @param agentId The agent to check.
+     */
+    suspend fun getAgentStatus(agentId: String): ToolResult {
+        val agent = agentStore.get(agentId)
+            ?: return ToolResult.fail("Agent not found: $agentId")
+
+        val messageCount = conversationStore.getMessageCount(agentId)
+        val tasks = taskStore.listByAssignee(agentId)
+
+        val statusInfo = buildMap {
+            put("id", agent.id)
+            put("name", agent.name)
+            put("role", agent.role.name)
+            put("status", agent.status.name)
+            put("modelTier", agent.modelTier.name)
+            put("messageCount", messageCount.toString())
+            put("parentId", agent.parentId ?: "none")
+            put("createdAt", agent.createdAt)
+            put("updatedAt", agent.updatedAt)
+            if (tasks.isNotEmpty()) {
+                put("assignedTaskIds", tasks.joinToString(",") { it.id })
+                put("assignedTaskTitles", tasks.joinToString(",") { it.title })
+            }
+            agent.metadata.forEach { (k, v) -> put("meta_$k", v) }
+        }
+
+        return ToolResult.ok(json.encodeToString(statusInfo))
+    }
+
+    /**
+     * Get a summary of what an agent did.
+     *
+     * Provides a quick overview without reading the full conversation:
+     * - Agent status and basic info
+     * - Last assistant response (truncated)
+     * - Tool call counts by tool name
+     * - Assigned tasks
+     *
+     * Use this for a quick overview before deciding whether to
+     * read the full conversation with [readAgentConversation].
+     *
+     * @param agentId The agent to summarize.
+     */
+    suspend fun getAgentSummary(agentId: String): ToolResult {
+        val agent = agentStore.get(agentId)
+            ?: return ToolResult.fail("Agent not found: $agentId")
+
+        val messages = conversationStore.getConversation(agentId)
+        val tasks = taskStore.listByAssignee(agentId)
+
+        // Find last assistant message
+        val lastAssistantMessage = messages.lastOrNull { it.role == MessageRole.ASSISTANT }
+
+        // Count tool calls
+        val toolCallCounts = mutableMapOf<String, Int>()
+        messages.filter { it.role == MessageRole.TOOL && it.toolName != null }
+            .forEach { msg ->
+                val toolName = msg.toolName!!
+                toolCallCounts[toolName] = (toolCallCounts[toolName] ?: 0) + 1
+            }
+
+        // Build summary
+        val summary = buildString {
+            appendLine("## Agent Summary: \"${agent.name}\"")
+            appendLine()
+            appendLine("- **Agent ID:** ${agent.id}")
+            appendLine("- **Role:** ${agent.role.displayName}")
+            appendLine("- **Status:** ${agent.status.name}")
+            appendLine("- **Model Tier:** ${agent.modelTier.name}")
+            appendLine("- **Messages:** ${messages.size}")
+            appendLine("- **Created:** ${agent.createdAt}")
+            appendLine("- **Last Updated:** ${agent.updatedAt}")
+            if (agent.parentId != null) {
+                appendLine("- **Parent Agent:** ${agent.parentId}")
+            }
+
+            if (tasks.isNotEmpty()) {
+                appendLine()
+                appendLine("### Assigned Tasks")
+                tasks.forEach { task ->
+                    appendLine("- ${task.title} (${task.id}) — ${task.status.name}")
+                }
+            }
+
+            if (toolCallCounts.isNotEmpty()) {
+                appendLine()
+                appendLine("### Tool Calls")
+                toolCallCounts.entries.sortedByDescending { it.value }.forEach { (name, count) ->
+                    appendLine("- $name: $count calls")
+                }
+            }
+
+            if (lastAssistantMessage != null) {
+                appendLine()
+                appendLine("### Last Response")
+                val truncated = if (lastAssistantMessage.content.length > 1000) {
+                    lastAssistantMessage.content.take(1000) + "..."
+                } else {
+                    lastAssistantMessage.content
+                }
+                appendLine(truncated)
+            }
+
+            appendLine()
+            appendLine("_Use `read_agent_conversation(agentId=\"${agentId}\")` to see the full conversation._")
+        }
+
+        return ToolResult.ok(summary)
     }
 }
