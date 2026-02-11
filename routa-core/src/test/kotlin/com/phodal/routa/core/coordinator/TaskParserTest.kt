@@ -542,7 +542,7 @@ Just a description with no structured sections.
     }
 
     @Test
-    fun `parse handles task without title`() {
+    fun `parse skips task without title`() {
         val text = """
 @@@task
 ## Objective
@@ -552,9 +552,8 @@ Do something
 
         val tasks = TaskParser.parse(text, workspace)
 
-        assertEquals(1, tasks.size)
-        assertEquals("Untitled Task", tasks[0].title)
-        assertEquals("Do something", tasks[0].objective)
+        // Tasks without a valid # title are skipped (following TypeScript behavior)
+        assertEquals(0, tasks.size)
     }
 
     @Test

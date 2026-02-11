@@ -8,6 +8,11 @@ import java.util.UUID
 /**
  * Parses `@@@task` blocks from Routa's planning output into [Task] objects.
  *
+ * Follows the TypeScript implementation approach for robust parsing:
+ * - Uses stateful line-by-line parsing to handle nested code blocks correctly
+ * - Each `@@@task` block contains one task (first `# ` heading is title, rest is content)
+ * - Extracts structured sections (Objective, Scope, etc.) from the content
+ *
  * The `@@@task` block format:
  * ```
  * @@@task
@@ -28,55 +33,91 @@ import java.util.UUID
  * - ./gradlew test
  * @@@
  * ```
- *
- * Supports both English and Chinese section headers:
- * - Objective / 目标
- * - Scope / 范围
- * - Definition of Done / 完成标准 / 验收标准
- * - Verification / 验证
  */
 object TaskParser {
-
-    private val TASK_BLOCK_REGEX = Regex(
-        """@@@task\s*\n(.*?)@@@""",
-        setOf(RegexOption.DOT_MATCHES_ALL),
-    )
-
-    /**
-     * Section name aliases: maps each canonical section to all recognized header names.
-     * Supports English and Chinese headers that LLMs commonly produce.
-     */
-    private val SECTION_ALIASES = mapOf(
-        "Objective" to listOf("Objective", "目标", "Goal", "目的"),
-        "Scope" to listOf("Scope", "范围", "作用域"),
-        "Definition of Done" to listOf(
-            "Definition of Done", "完成标准", "验收标准",
-            "Acceptance Criteria", "Done Criteria", "完成条件",
-        ),
-        "Verification" to listOf("Verification", "验证", "Verify", "验证方法", "测试验证"),
-    )
 
     /**
      * Parse all `@@@task` blocks from the given text.
      *
+     * Uses stateful parsing to correctly handle nested code blocks.
      * If the LLM places multiple tasks inside a single `@@@task` block
-     * (identified by multiple `# ` level-1 headers), they are automatically
-     * split into separate tasks.
+     * (identified by multiple `# ` level-1 headers outside code fences),
+     * they are automatically split into separate tasks.
      *
      * @param text The Routa output containing task blocks.
      * @param workspaceId The workspace these tasks belong to.
      * @return List of parsed tasks.
      */
     fun parse(text: String, workspaceId: String): List<Task> {
-        val blocks = TASK_BLOCK_REGEX.findAll(text).map { it.groupValues[1].trim() }.toList()
-
+        val blocks = extractTaskBlocks(text)
         if (blocks.isEmpty()) return emptyList()
 
         return blocks.flatMap { block ->
-            splitMultiTaskBlock(block).map { subBlock ->
+            splitMultiTaskBlock(block).mapNotNull { subBlock ->
                 parseTaskBlock(subBlock, workspaceId)
             }
         }
+    }
+
+    /**
+     * Extract `@@@task` blocks using stateful line-by-line parsing.
+     *
+     * This approach correctly handles:
+     * - Nested code blocks (```bash ... ```) inside task blocks
+     * - Both `@@@task` and `@@@tasks` syntax
+     * - Various line ending styles (\n, \r\n)
+     */
+    private fun extractTaskBlocks(content: String): List<String> {
+        val results = mutableListOf<String>()
+        val lines = content.lines()
+
+        var inTaskBlock = false
+        var inNestedCodeBlock = false
+        val taskBlockLines = mutableListOf<String>()
+
+        for (line in lines) {
+            if (!inTaskBlock) {
+                // Check for task block start: @@@task or @@@tasks
+                if (line.trim().matches(Regex("""@@@tasks?\s*"""))) {
+                    inTaskBlock = true
+                    inNestedCodeBlock = false
+                    taskBlockLines.clear()
+                }
+            } else {
+                // We're inside a task block
+                if (!inNestedCodeBlock) {
+                    // Check for task block end: @@@
+                    if (line.trim() == "@@@") {
+                        // End of task block
+                        val blockContent = taskBlockLines.joinToString("\n").trim()
+                        if (blockContent.isNotEmpty()) {
+                            results.add(blockContent)
+                        }
+                        inTaskBlock = false
+                        taskBlockLines.clear()
+                    } else if (line.trim().startsWith("```") && line.trim().length > 3) {
+                        // Starting a nested code block (e.g., ```bash, ```typescript)
+                        inNestedCodeBlock = true
+                        taskBlockLines.add(line)
+                    } else if (line.trim() == "```") {
+                        // Bare ``` - could be start of anonymous code block
+                        inNestedCodeBlock = true
+                        taskBlockLines.add(line)
+                    } else {
+                        taskBlockLines.add(line)
+                    }
+                } else {
+                    // We're inside a nested code block
+                    taskBlockLines.add(line)
+                    // Check for nested code block end (bare ```)
+                    if (line.trim() == "```") {
+                        inNestedCodeBlock = false
+                    }
+                }
+            }
+        }
+
+        return results
     }
 
     /**
@@ -93,24 +134,24 @@ object TaskParser {
     internal fun splitMultiTaskBlock(block: String): List<String> {
         val lines = block.lines()
 
-        // Build a set of line indices that are inside code fences
-        val insideCodeFence = BooleanArray(lines.size)
-        var inFence = false
-        for (i in lines.indices) {
-            val trimmed = lines[i].trim()
-            if (trimmed.startsWith("```")) {
-                inFence = !inFence
-                insideCodeFence[i] = true // The fence line itself is "inside"
-            } else {
-                insideCodeFence[i] = inFence
-            }
-        }
+        // Find title indices, tracking code fence state
+        val titleIndices = mutableListOf<Int>()
+        var inCodeFence = false
 
-        // Find `# ` title lines that are NOT inside code fences
-        val titleIndices = lines.indices.filter { i ->
-            !insideCodeFence[i] &&
-                lines[i].startsWith("# ") &&
-                !lines[i].startsWith("## ")
+        for (i in lines.indices) {
+            val line = lines[i]
+            val trimmed = line.trim()
+
+            // Track code fence state
+            if (trimmed.startsWith("```")) {
+                inCodeFence = !inCodeFence
+                continue
+            }
+
+            // Only consider `# ` headers outside code fences
+            if (!inCodeFence && line.startsWith("# ") && !line.startsWith("## ")) {
+                titleIndices.add(i)
+            }
         }
 
         // 0 or 1 title → single task block
@@ -129,16 +170,39 @@ object TaskParser {
         return subBlocks
     }
 
-    internal fun parseTaskBlock(block: String, workspaceId: String): Task {
+    /**
+     * Parse a single task block into a [Task] object.
+     *
+     * The first `# ` heading (outside code fences) is the title.
+     * Sections are extracted by looking for `## SectionName` headers.
+     */
+    internal fun parseTaskBlock(block: String, workspaceId: String): Task? {
         val lines = block.lines()
 
         // Find the title — must be outside code fences
-        val title = findTitleOutsideCodeFences(lines)
+        val (title, titleLineIndex) = findTitleOutsideCodeFences(lines)
 
-        val objective = extractSectionWithAliases(lines, "Objective")
-        val scope = extractListSectionWithAliases(lines, "Scope")
-        val acceptanceCriteria = extractListSectionWithAliases(lines, "Definition of Done")
-        val verificationCommands = extractListSectionWithAliases(lines, "Verification")
+        // If no valid title found, skip this block
+        if (title == null) return null
+
+        // Extract content after the title line
+        val contentLines = if (titleLineIndex + 1 < lines.size) {
+            lines.subList(titleLineIndex + 1, lines.size)
+        } else {
+            emptyList()
+        }
+
+        // Extract structured sections from content
+        val objective = extractSection(contentLines, listOf("Objective", "目标", "Goal", "目的"))
+        val scope = extractListSection(contentLines, listOf("Scope", "范围", "作用域"))
+        val acceptanceCriteria = extractListSection(
+            contentLines,
+            listOf("Definition of Done", "完成标准", "验收标准", "Acceptance Criteria", "Done Criteria", "完成条件")
+        )
+        val verificationCommands = extractListSection(
+            contentLines,
+            listOf("Verification", "验证", "Verify", "验证方法", "测试验证")
+        )
 
         val now = Instant.now().toString()
         return Task(
@@ -157,67 +221,86 @@ object TaskParser {
 
     /**
      * Find the first `# ` title line that is not inside a code fence.
+     *
+     * @return Pair of (title, lineIndex) or (null, -1) if no title found.
      */
-    private fun findTitleOutsideCodeFences(lines: List<String>): String {
-        var inFence = false
-        for (line in lines) {
+    private fun findTitleOutsideCodeFences(lines: List<String>): Pair<String?, Int> {
+        var inCodeFence = false
+
+        for (i in lines.indices) {
+            val line = lines[i]
             val trimmed = line.trim()
+
+            // Track code fence state
             if (trimmed.startsWith("```")) {
-                inFence = !inFence
+                inCodeFence = !inCodeFence
                 continue
             }
-            if (!inFence && line.startsWith("# ") && !line.startsWith("## ")) {
-                return line.removePrefix("# ").trim()
+
+            // Check for title outside code fence
+            if (!inCodeFence && line.startsWith("# ") && !line.startsWith("## ")) {
+                val title = line.removePrefix("# ").trim()
+                if (title.isNotEmpty()) {
+                    return Pair(title, i)
+                }
             }
         }
-        return "Untitled Task"
-    }
 
-    /**
-     * Extract a text section, trying all known aliases for the given section name.
-     */
-    private fun extractSectionWithAliases(lines: List<String>, canonicalName: String): String {
-        val aliases = SECTION_ALIASES[canonicalName] ?: listOf(canonicalName)
-        for (alias in aliases) {
-            val result = extractSection(lines, alias)
-            if (result.isNotEmpty()) return result
-        }
-        return ""
-    }
-
-    /**
-     * Extract list items, trying all known aliases for the given section name.
-     */
-    private fun extractListSectionWithAliases(lines: List<String>, canonicalName: String): List<String> {
-        val aliases = SECTION_ALIASES[canonicalName] ?: listOf(canonicalName)
-        for (alias in aliases) {
-            val result = extractListSection(lines, alias)
-            if (result.isNotEmpty()) return result
-        }
-        return emptyList()
+        return Pair(null, -1)
     }
 
     /**
      * Extract a text section between `## SectionName` and the next `##` or end.
+     * Tries multiple aliases for the section name.
+     * Correctly handles code fences within sections.
      */
-    private fun extractSection(lines: List<String>, sectionName: String): String {
-        val startIdx = lines.indexOfFirst { it.trim().startsWith("## $sectionName") }
+    private fun extractSection(lines: List<String>, aliases: List<String>): String {
+        // Find the section start
+        var startIdx = -1
+        for (alias in aliases) {
+            startIdx = lines.indexOfFirst { line ->
+                val trimmed = line.trim()
+                trimmed.startsWith("## $alias") || trimmed == "## $alias"
+            }
+            if (startIdx != -1) break
+        }
+
         if (startIdx == -1) return ""
 
+        // Collect content until next ## header (outside code fences)
         val contentLines = mutableListOf<String>()
+        var inCodeFence = false
+
         for (i in (startIdx + 1) until lines.size) {
             val line = lines[i]
-            if (line.trim().startsWith("## ")) break
+            val trimmed = line.trim()
+
+            // Track code fence state
+            if (trimmed.startsWith("```")) {
+                inCodeFence = !inCodeFence
+                contentLines.add(line)
+                continue
+            }
+
+            // Stop at next section header (only if outside code fence)
+            if (!inCodeFence && trimmed.startsWith("## ")) {
+                break
+            }
+
             contentLines.add(line)
         }
+
         return contentLines.joinToString("\n").trim()
     }
 
     /**
      * Extract list items (lines starting with `-`) from a section.
+     * Tries multiple aliases for the section name.
      */
-    private fun extractListSection(lines: List<String>, sectionName: String): List<String> {
-        val section = extractSection(lines, sectionName)
+    private fun extractListSection(lines: List<String>, aliases: List<String>): List<String> {
+        val section = extractSection(lines, aliases)
+        if (section.isEmpty()) return emptyList()
+
         return section.lines()
             .filter { it.trim().startsWith("-") }
             .map { it.trim().removePrefix("-").trim() }
