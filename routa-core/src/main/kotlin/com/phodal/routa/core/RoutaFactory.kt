@@ -1,8 +1,11 @@
 package com.phodal.routa.core
 
+import com.phodal.routa.core.config.AcpAgentConfig
+import com.phodal.routa.core.config.NamedModelConfig
 import com.phodal.routa.core.coordinator.AgentExecutionContext
 import com.phodal.routa.core.coordinator.RoutaCoordinator
 import com.phodal.routa.core.event.EventBus
+import com.phodal.routa.core.provider.*
 import com.phodal.routa.core.store.*
 import kotlinx.coroutines.CoroutineScope
 
@@ -12,19 +15,22 @@ import kotlinx.coroutines.CoroutineScope
  * Provides default in-memory implementations that work out of the box.
  * For production use, replace stores with persistent implementations.
  *
- * ## Usage
+ * ## Usage (Basic — in-memory stores)
  * ```kotlin
  * val routa = RoutaFactory.createInMemory()
- * val coordinator = routa.coordinator
+ * val routaAgentId = routa.coordinator.initialize("my-workspace")
+ * ```
  *
- * // Initialize a coordination session
- * val routaAgentId = coordinator.initialize("my-workspace")
- *
- * // ... feed user input to the Routa agent via ACP/Koog ...
- * // ... parse @@@task blocks from Routa's output ...
- *
- * coordinator.registerTasks(routaOutput)
- * coordinator.executeNextWave()
+ * ## Usage (With providers — capability-based routing)
+ * ```kotlin
+ * val routa = RoutaFactory.createInMemory()
+ * val provider = RoutaFactory.createProvider(
+ *     system = routa,
+ *     workspaceId = "my-workspace",
+ *     cwd = "/path/to/project",
+ *     acpConfig = AcpAgentConfig(command = "codex", args = listOf("--full-auto")),
+ * )
+ * val orchestrator = RoutaOrchestrator(routa, provider, "my-workspace")
  * ```
  */
 object RoutaFactory {
@@ -74,6 +80,72 @@ object RoutaFactory {
             RoutaCoordinator(context)
         }
         return RoutaSystem(context, coordinator)
+    }
+
+    /**
+     * Create a capability-based provider with automatic routing.
+     *
+     * Sets up:
+     * - [KoogAgentProvider] for ROUTA (planning via LLM with tool calling)
+     * - [AcpAgentProvider] for CRAFTER/GATE (real coding agent via ACP)
+     * - [ResilientAgentProvider] wrapper with circuit breaker + error recovery
+     * - [CapabilityBasedRouter] for dynamic role → provider routing
+     *
+     * @param system The Routa system (stores, coordinator, tools).
+     * @param workspaceId The workspace to operate in.
+     * @param cwd Working directory for ACP/Claude agents.
+     * @param acpConfig ACP agent configuration. If null, Koog is used for all roles.
+     * @param acpAgentKey ACP agent key (e.g., "codex", "claude-code").
+     * @param claudePath Path to Claude CLI binary. If provided, adds Claude as a provider.
+     * @param modelConfig Optional Koog model configuration override.
+     * @param resilient Whether to wrap providers with circuit breaker + recovery.
+     */
+    fun createProvider(
+        system: RoutaSystem,
+        workspaceId: String,
+        cwd: String = ".",
+        acpConfig: AcpAgentConfig? = null,
+        acpAgentKey: String = "codex",
+        claudePath: String? = null,
+        modelConfig: NamedModelConfig? = null,
+        resilient: Boolean = true,
+    ): AgentProvider {
+        val providers = mutableListOf<AgentProvider>()
+
+        // Koog for planning (ROUTA role)
+        val koog: AgentProvider = KoogAgentProvider(
+            agentTools = system.tools,
+            workspaceId = workspaceId,
+            modelConfig = modelConfig,
+        )
+        providers.add(if (resilient) {
+            ResilientAgentProvider(koog, system.context.conversationStore)
+        } else koog)
+
+        // ACP for implementation (CRAFTER/GATE roles)
+        if (acpConfig != null) {
+            val acp: AgentProvider = AcpAgentProvider(
+                agentKey = acpAgentKey,
+                config = acpConfig,
+                cwd = cwd,
+            )
+            providers.add(if (resilient) {
+                ResilientAgentProvider(acp, system.context.conversationStore)
+            } else acp)
+        }
+
+        // Claude CLI as an alternative implementation provider
+        if (claudePath != null) {
+            val claude: AgentProvider = ClaudeAgentProvider(
+                claudePath = claudePath,
+                cwd = cwd,
+            )
+            providers.add(if (resilient) {
+                ResilientAgentProvider(claude, system.context.conversationStore)
+            } else claude)
+        }
+
+        return CapabilityBasedRouter(*providers.toTypedArray())
     }
 }
 

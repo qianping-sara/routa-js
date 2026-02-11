@@ -3,6 +3,11 @@ package com.phodal.routa.core.runner
 import com.phodal.routa.core.RoutaSystem
 import com.phodal.routa.core.coordinator.CoordinationPhase
 import com.phodal.routa.core.model.*
+import com.phodal.routa.core.provider.AgentProvider
+import com.phodal.routa.core.provider.StreamChunk
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.Json
 
 /**
@@ -13,15 +18,16 @@ import kotlinx.serialization.json.Json
  * ```
  * User Request
  *   → ROUTA plans (@@@task blocks)
- *     → Wave of CRAFTER agents execute tasks
+ *     → Wave of CRAFTER agents execute tasks (PARALLEL)
  *       → Each CRAFTER reports completion
  *         → GATE verifies all work
  *           → APPROVED: done
  *           → NOT APPROVED: fix tasks → CRAFTER again
  * ```
  *
- * Each agent is run via the [AgentRunner] abstraction, which can be backed
- * by Koog AIAgent (real LLM) or a mock for testing.
+ * Supports both the legacy [AgentRunner] interface and the new [AgentProvider]
+ * interface. When an [AgentProvider] is used, Crafters in the same wave execute
+ * in parallel and streaming chunks are forwarded via [onStreamChunk].
  *
  * **Tool calling strategy:**
  * - If the LLM supports function calling (via Koog), tools like `report_to_parent`
@@ -31,7 +37,13 @@ import kotlinx.serialization.json.Json
  *
  * Usage:
  * ```kotlin
+ * // Legacy (sequential)
  * val orchestrator = RoutaOrchestrator(routa, agentRunner, "my-workspace")
+ *
+ * // New (parallel + streaming)
+ * val orchestrator = RoutaOrchestrator(routa, agentProvider, "my-workspace",
+ *     onStreamChunk = { agentId, chunk -> println("[$agentId] $chunk") })
+ *
  * val result = orchestrator.execute("Add user authentication to the API")
  * ```
  */
@@ -41,7 +53,11 @@ class RoutaOrchestrator(
     private val workspaceId: String,
     private val maxWaves: Int = 3,
     private val onPhaseChange: (suspend (OrchestratorPhase) -> Unit)? = null,
+    private val onStreamChunk: ((agentId: String, chunk: StreamChunk) -> Unit)? = null,
 ) {
+
+    // If the runner is also an AgentProvider, use its extended capabilities
+    private val provider: AgentProvider? = runner as? AgentProvider
 
     private val json = Json { prettyPrint = true; ignoreUnknownKeys = true }
 
@@ -100,20 +116,22 @@ class RoutaOrchestrator(
                 continue
             }
 
-            // Run each CRAFTER
-            for ((crafterId, taskId) in delegations) {
-                emitPhase(OrchestratorPhase.CrafterRunning(crafterId, taskId))
-
-                val taskContext = routa.coordinator.buildAgentContext(crafterId) ?: continue
-                val context = injectAgentIdentity(taskContext, crafterId, taskId)
-                val crafterOutput = runner.run(AgentRole.CRAFTER, crafterId, context)
-
-                // Ensure the CRAFTER's work is reported
-                // (If Koog tool calling worked, report_to_parent was already called.
-                //  If not, we do it here based on the text output.)
-                ensureCrafterReport(crafterId, taskId, crafterOutput)
-
-                emitPhase(OrchestratorPhase.CrafterCompleted(crafterId, taskId))
+            // Run CRAFTERs — parallel when using AgentProvider, sequential otherwise
+            if (provider != null && delegations.size > 1) {
+                // ── Parallel execution via coroutineScope + async ──
+                coroutineScope {
+                    val jobs = delegations.map { (crafterId, taskId) ->
+                        async {
+                            runSingleCrafter(crafterId, taskId)
+                        }
+                    }
+                    jobs.awaitAll()
+                }
+            } else {
+                // ── Sequential fallback (legacy AgentRunner) ──
+                for ((crafterId, taskId) in delegations) {
+                    runSingleCrafter(crafterId, taskId)
+                }
             }
 
             // ── Phase 4: GATE verifies ──────────────────────────────────
@@ -127,14 +145,25 @@ class RoutaOrchestrator(
             }
 
             val gateContext = buildGateContext(gateAgentId)
-            // Find the first review task for the gate to report on
+            // Include ALL review task IDs so the Gate can report on each
             val reviewTasks = routa.context.taskStore.listByStatus(workspaceId, TaskStatus.REVIEW_REQUIRED)
-            val gateTaskId = reviewTasks.firstOrNull()?.id ?: ""
-            val gateContextWithIdentity = injectAgentIdentity(gateContext, gateAgentId, gateTaskId)
-            val gateOutput = runner.run(AgentRole.GATE, gateAgentId, gateContextWithIdentity)
+            val taskIdsList = reviewTasks.joinToString(", ") { it.id }
+            val gateContextWithIdentity = injectAgentIdentity(
+                gateContext, gateAgentId, taskIdsList,
+            )
+            val gateOutput = if (provider != null) {
+                provider.runStreaming(AgentRole.GATE, gateAgentId, gateContextWithIdentity) { chunk ->
+                    onStreamChunk?.invoke(gateAgentId, chunk)
+                }
+            } else {
+                runner.run(AgentRole.GATE, gateAgentId, gateContextWithIdentity)
+            }
 
             // Ensure the GATE's verdict is reported
             ensureGateReport(gateAgentId, gateOutput)
+
+            // Clean up provider resources for this gate agent
+            provider?.cleanup(gateAgentId)
 
             emitPhase(OrchestratorPhase.VerificationCompleted(gateAgentId, gateOutput))
 
@@ -173,6 +202,37 @@ class RoutaOrchestrator(
             emitPhase(OrchestratorPhase.MaxWavesReached(maxWaves))
             OrchestratorResult.MaxWavesReached(maxWaves, routa.coordinator.getTaskSummary())
         }
+    }
+
+    // ── Single Crafter execution ────────────────────────────────────────
+
+    /**
+     * Run a single CRAFTER agent with streaming (if available) and report handling.
+     */
+    private suspend fun runSingleCrafter(crafterId: String, taskId: String) {
+        emitPhase(OrchestratorPhase.CrafterRunning(crafterId, taskId))
+
+        val taskContext = routa.coordinator.buildAgentContext(crafterId)
+            ?: return // No task assigned
+        val context = injectAgentIdentity(taskContext, crafterId, taskId)
+
+        val crafterOutput = if (provider != null) {
+            provider.runStreaming(AgentRole.CRAFTER, crafterId, context) { chunk ->
+                onStreamChunk?.invoke(crafterId, chunk)
+            }
+        } else {
+            runner.run(AgentRole.CRAFTER, crafterId, context)
+        }
+
+        // Ensure the CRAFTER's work is reported
+        // (If Koog tool calling worked, report_to_parent was already called.
+        //  If not, we do it here based on the text output.)
+        ensureCrafterReport(crafterId, taskId, crafterOutput)
+
+        // Clean up provider resources for this agent
+        provider?.cleanup(crafterId)
+
+        emitPhase(OrchestratorPhase.CrafterCompleted(crafterId, taskId))
     }
 
     // ── Identity injection ────────────────────────────────────────────
