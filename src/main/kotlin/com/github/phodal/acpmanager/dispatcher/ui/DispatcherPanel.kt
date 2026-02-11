@@ -14,6 +14,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import com.phodal.routa.core.coordinator.CoordinationPhase
+import com.phodal.routa.core.model.AgentStatus
 import com.phodal.routa.core.runner.OrchestratorPhase
 import com.phodal.routa.core.runner.OrchestratorResult
 import kotlinx.coroutines.*
@@ -30,26 +31,26 @@ private val log = logger<DispatcherPanel>()
 /**
  * Main panel for the Multi-Agent Dispatcher ToolWindow tab.
  *
- * Redesigned with DAG + multi-agent architecture:
+ * Layout: left-right split.
  *
  * ```
- * ┌─────────────────────────────────┐
- * │  ROUTA (Coordinator)            │  ← Plans tasks, streaming output
- * │         ↓                       │
- * ├─────────────────────────────────┤
- * │  CRAFTERs (Implementors)       │  ← Tabbed, model config, main focus
- * │  [Tab1] [Tab2] [Tab3]          │
- * │  Task info + streaming output   │
- * │         ↓                       │
- * ├─────────────────────────────────┤
- * │  GATE (Verifier)               │  ← Verdict, streaming verification
- * ├─────────────────────────────────┤
- * │  [Input area]            [Send] │  ← User request input
- * └─────────────────────────────────┘
+ * ┌───────────────────────────┬─────────────────────────┐
+ * │  Phase + Agent + Model    │  ROUTA        PLANNING   │
+ * ├───────────────────────────┤  CRAFTER-1 << ACTIVE     │
+ * │                           │  CRAFTER-2    PENDING     │
+ * │  [Selected Agent's full   │  GATE         INACTIVE    │
+ * │   AcpEventRenderer]       ├─────────────────────────┤
+ * │                           │                           │
+ * │                           │                           │
+ * ├───────────────────────────┤                           │
+ * │  [agent] [input...] [>]  │                           │
+ * └───────────────────────────┴─────────────────────────┘
  * ```
  *
- * The flow follows the Routa multi-agent DAG:
- * ROUTA plans → CRAFTERs execute (parallel) → GATE verifies
+ * Left ~65%: title bar (NORTH) + selected renderer (CENTER) + input (SOUTH)
+ * Right ~35%: agent sidebar with flat card list (ROUTA, CRAFTER-N..., GATE)
+ *
+ * All agents use unified AcpEventRenderer via AgentCardPanel + StreamChunkAdapter.
  */
 class DispatcherPanel(
     private val project: Project,
@@ -60,13 +61,67 @@ class DispatcherPanel(
     private val configService = AcpConfigService.getInstance(project)
     private val routaService = IdeaRoutaService.getInstance(project)
 
-    // ── UI Sections ─────────────────────────────────────────────────────
+    // ── Agent Panels (one per agent) ─────────────────────────────────────
 
-    private val routaSection = RoutaSectionPanel()
-    private val crafterSection = CrafterSectionPanel()
-    private val gateSection = GateSectionPanel()
+    /** All agent panels keyed by agent ID. */
+    private val agentPanels = mutableMapOf<String, AgentCardPanel>()
 
-    // Status hint label for displaying MCP server info
+    /** The fixed ROUTA panel. */
+    private val routaPanel = AgentCardPanel("__routa__", AgentCardPanel.AgentRole.ROUTA)
+
+    /** The fixed GATE panel. */
+    private val gatePanel = AgentCardPanel("__gate__", AgentCardPanel.AgentRole.GATE)
+
+    // ── Left Panel Components ────────────────────────────────────────────
+
+    /** Title bar: phase dot + agent name + model selector. */
+    private val phaseDot = JBLabel("●").apply {
+        foreground = JBColor(0x6B7280, 0x9CA3AF)
+        font = font.deriveFont(12f)
+    }
+
+    private val titleLabel = JBLabel("ROUTA").apply {
+        foreground = JBColor(0xC9D1D9, 0xC9D1D9)
+        font = font.deriveFont(Font.BOLD, 13f)
+    }
+
+    private val phaseLabel = JBLabel("IDLE").apply {
+        foreground = JBColor(0x6B7280, 0x9CA3AF)
+        font = font.deriveFont(Font.BOLD, 10f)
+    }
+
+    private val modelCombo = JComboBox<String>().apply {
+        preferredSize = Dimension(160, 24)
+        font = font.deriveFont(11f)
+        toolTipText = "Select agent model"
+    }
+
+    /** CardLayout area that swaps the displayed renderer scroll pane. */
+    private val rendererCardPanel = JPanel(CardLayout()).apply {
+        isOpaque = true
+        background = JBColor(0x0D1117, 0x0D1117)
+    }
+
+    // ── Right Panel ──────────────────────────────────────────────────────
+
+    private val sidebar = AgentSidebarPanel()
+
+    // ── Input Panel Components ───────────────────────────────────────────
+
+    // Agent selector for input panel
+    private val agentLabel = JBLabel("Select Agent").apply {
+        foreground = JBColor(0x8B949E, 0x8B949E)
+        font = font.deriveFont(11f)
+        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        toolTipText = "Click to change agent"
+    }
+
+    private val agentPopup = JPopupMenu().apply {
+        background = JBColor(0x161B22, 0x161B22)
+        border = BorderFactory.createLineBorder(JBColor(0x30363D, 0x30363D))
+    }
+
+    // Status hint label
     private val hintLabel = JBLabel("Routa DAG: Plan → Execute → Verify").apply {
         foreground = JBColor(0x484F58, 0x484F58)
         font = font.deriveFont(9f)
@@ -81,13 +136,13 @@ class DispatcherPanel(
     }
 
     private val mcpUrlLabel = JBLabel("MCP Server: not running").apply {
-        foreground = JBColor(0x589DF6, 0x589DF6) // Blue color for link
+        foreground = JBColor(0x589DF6, 0x589DF6)
         font = font.deriveFont(9f)
         cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
     }
 
     private val mcpTransportLabel = JBLabel("").apply {
-        foreground = JBColor(0x8B949E, 0x8B949E) // Gray color for transport type
+        foreground = JBColor(0x8B949E, 0x8B949E)
         font = font.deriveFont(8f)
     }
 
@@ -100,20 +155,14 @@ class DispatcherPanel(
 
     private var currentMcpUrl: String? = null
 
-    // Agent selector components (for unified input panel)
-    private val agentLabel = JBLabel("Select Agent").apply {
-        foreground = JBColor(0x8B949E, 0x8B949E)
-        font = font.deriveFont(11f)
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        toolTipText = "Click to change agent"
-    }
-
-    private val agentPopup = JPopupMenu().apply {
-        background = JBColor(0x161B22, 0x161B22)
-        border = BorderFactory.createLineBorder(JBColor(0x30363D, 0x30363D))
-    }
+    /** Currently selected agent ID in the sidebar. */
+    private var selectedAgentId: String? = null
 
     init {
+        // Register fixed panels
+        agentPanels[routaPanel.agentId] = routaPanel
+        agentPanels[gatePanel.agentId] = gatePanel
+
         setupUI()
         loadAgents()
         observeRoutaService()
@@ -127,81 +176,81 @@ class DispatcherPanel(
             background = JBColor(0x0D1117, 0x0D1117)
         }
 
-        // Create resizable DAG sections using nested JSplitPanes
-        // ROUTA + CRAFTERs split
-        val routaCrafterSplit = JSplitPane(JSplitPane.VERTICAL_SPLIT).apply {
-            topComponent = routaSection
-            bottomComponent = crafterSection
-            dividerLocation = 120  // ROUTA starts compact
-            resizeWeight = 0.2     // ROUTA gets 20% of extra space
-            border = JBUI.Borders.empty()
-            dividerSize = 4
-            isContinuousLayout = true
+        // ── Left panel ──────────────────────────────────────────────────
+        val leftPanel = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = JBColor(0x0D1117, 0x0D1117)
         }
 
-        // (ROUTA + CRAFTERs) + GATE split
-        val dagSplitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT).apply {
-            topComponent = routaCrafterSplit
-            bottomComponent = gateSection
-            dividerLocation = 400  // GATE starts small at bottom
-            resizeWeight = 0.85    // Top section gets 85% of extra space, GATE stays small
-            border = JBUI.Borders.empty()
-            dividerSize = 4
-            isContinuousLayout = true
-        }
+        // Title bar
+        val titleBar = createTitleBar()
+        leftPanel.add(titleBar, BorderLayout.NORTH)
 
-        // Input area at the bottom
+        // Renderer card area (center)
+        rendererCardPanel.add(routaPanel.rendererScroll, routaPanel.agentId)
+        rendererCardPanel.add(gatePanel.rendererScroll, gatePanel.agentId)
+        leftPanel.add(rendererCardPanel, BorderLayout.CENTER)
+
+        // Input area (bottom)
         val inputPanel = createInputPanel()
+        leftPanel.add(inputPanel, BorderLayout.SOUTH)
 
-        mainPanel.add(dagSplitPane, BorderLayout.CENTER)
-        mainPanel.add(inputPanel, BorderLayout.SOUTH)
+        // ── Horizontal split: left + right sidebar ──────────────────────
+        val splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT).apply {
+            leftComponent = leftPanel
+            rightComponent = sidebar
+            dividerLocation = 500
+            resizeWeight = 0.65
+            border = JBUI.Borders.empty()
+            dividerSize = 4
+            isContinuousLayout = true
+        }
 
+        mainPanel.add(splitPane, BorderLayout.CENTER)
         setContent(mainPanel)
 
-        // Wire up CRAFTER model change (ACP agent selection)
-        crafterSection.onModelChanged = { model ->
-            routaService.crafterModelKey.value = model
-
-            // Update ROUTA section status text to reflect new CRAFTER
-            // Since we now use ACP for ROUTA, show the ACP agent info
-            val routaInfo = if (routaService.useAcpForRouta.value) {
-                "ROUTA: $model (ACP Agent)"
-            } else {
-                routaService.getActiveLlmConfig()?.let { config ->
-                    "ROUTA: ${config.provider}/${config.model} (KoogAgent)"
-                } ?: "ROUTA: fallback to ACP"
-            }
-            routaSection.setPlanningText("✓ Ready. CRAFTER: $model | $routaInfo")
+        // ── Wire sidebar selection ──────────────────────────────────────
+        sidebar.onAgentSelected = { agentId ->
+            switchToAgent(agentId)
         }
 
-        // Wire up CRAFTER stop callback
-        crafterSection.onStopCrafter = { agentId ->
-            log.info("Stopping CRAFTER agent: $agentId")
-            routaService.stopCrafter(agentId)
+        // Default: select ROUTA
+        sidebar.selectAgent(sidebar.getRoutaId())
+
+        // ── Wire model combo ────────────────────────────────────────────
+        modelCombo.addActionListener {
+            val selected = modelCombo.selectedItem as? String ?: return@addActionListener
+            handleModelChange(selected)
         }
+    }
 
-        // Wire up ROUTA model change (LLM model selection for KoogAgent, or ACP agent selection)
-        routaSection.onModelChanged = { modelName ->
-            if (routaService.useAcpForRouta.value) {
-                // When using ACP for ROUTA, the model selector changes the ACP agent
-                routaService.routaModelKey.value = modelName
-                log.info("ROUTA ACP agent changed to: $modelName")
+    private fun createTitleBar(): JPanel {
+        return JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = JBColor(0x161B22, 0x161B22)
+            border = JBUI.Borders.compound(
+                JBUI.Borders.customLineBottom(JBColor(0x21262D, 0x21262D)),
+                JBUI.Borders.empty(6, 12)
+            )
 
-                val crafterModel = routaService.crafterModelKey.value
-                routaSection.setPlanningText("✓ Ready. CRAFTER: $crafterModel | ROUTA: $modelName (ACP Agent)")
-            } else {
-                // Legacy: use LLM configs for KoogAgent
-                val configs = routaService.getAvailableLlmConfigs()
-                val selected = configs.find { it.name == modelName }
-                if (selected != null) {
-                    routaService.setLlmModelConfig(selected)
-                    log.info("ROUTA LLM model changed to: ${selected.provider}/${selected.model}")
-
-                    val crafterModel = routaService.crafterModelKey.value
-                    val llmInfo = "ROUTA: ${selected.provider}/${selected.model} (KoogAgent)"
-                    routaSection.setPlanningText("✓ Ready. CRAFTER: $crafterModel | $llmInfo")
-                }
+            val leftContent = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
+                isOpaque = false
+                add(phaseDot)
+                add(titleLabel)
+                add(JBLabel("│").apply { foreground = JBColor(0x30363D, 0x30363D) })
+                add(phaseLabel)
             }
+            add(leftContent, BorderLayout.WEST)
+
+            val rightContent = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0)).apply {
+                isOpaque = false
+                add(JBLabel("Model:").apply {
+                    foreground = JBColor(0x8B949E, 0x8B949E)
+                    font = font.deriveFont(10f)
+                })
+                add(modelCombo)
+            }
+            add(rightContent, BorderLayout.EAST)
         }
     }
 
@@ -215,7 +264,7 @@ class DispatcherPanel(
             )
         }
 
-        // ── Unified input container (Agent + Input + Execute as one block) ──
+        // Unified input container
         val unifiedContainer = JPanel(BorderLayout()).apply {
             isOpaque = true
             background = JBColor(0x0D1117, 0x0D1117)
@@ -225,7 +274,7 @@ class DispatcherPanel(
             )
         }
 
-        // ── Top row: Agent selector (looks like plain text with settings icon) ──
+        // Top row: Agent selector
         val settingsIcon = JBLabel(AllIcons.General.Settings).apply {
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             toolTipText = "Select Agent"
@@ -239,7 +288,6 @@ class DispatcherPanel(
             add(agentLabel)
         }
 
-        // Click handlers for agent selection
         val showAgentPopup = { e: MouseEvent ->
             agentPopup.show(e.component, 0, e.component.height)
         }
@@ -250,7 +298,7 @@ class DispatcherPanel(
             override fun mouseClicked(e: MouseEvent) = showAgentPopup(e)
         })
 
-        // ── Center: Input text area ──
+        // Center: Input text area
         val inputArea = JBTextArea(3, 40).apply {
             lineWrap = true
             wrapStyleWord = true
@@ -282,7 +330,7 @@ class DispatcherPanel(
             horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
         }
 
-        // ── Bottom row: Execute/Stop button (right-aligned) ──
+        // Bottom row: buttons
         val sendButton = JButton(AllIcons.Actions.Execute).apply {
             toolTipText = "Execute (Enter)"
             preferredSize = Dimension(32, 28)
@@ -344,12 +392,11 @@ class DispatcherPanel(
             add(stopButton)
         }
 
-        // Assemble unified container
         unifiedContainer.add(agentRow, BorderLayout.NORTH)
         unifiedContainer.add(inputScroll, BorderLayout.CENTER)
         unifiedContainer.add(buttonRow, BorderLayout.SOUTH)
 
-        // ── Bottom status panel (hint + MCP status) ──
+        // Bottom status panel (hint + MCP status)
         val bottomPanel = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.emptyTop(6)
@@ -370,16 +417,12 @@ class DispatcherPanel(
         }
         bottomPanel.add(mcpStatusPanel, BorderLayout.EAST)
 
-        // Setup MCP URL click listener
         mcpUrlLabel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                currentMcpUrl?.let { url ->
-                    openUrlInBrowser(url)
-                }
+                currentMcpUrl?.let { url -> openUrlInBrowser(url) }
             }
         })
 
-        // Setup refresh button listener
         mcpRefreshButton.addActionListener {
             checkMcpServerStatus()
         }
@@ -390,27 +433,84 @@ class DispatcherPanel(
         return panel
     }
 
+    // ── Agent Selection ──────────────────────────────────────────────────
+
+    /**
+     * Switch the left panel to show the given agent's renderer.
+     */
+    private fun switchToAgent(agentId: String) {
+        selectedAgentId = agentId
+        val panel = agentPanels[agentId] ?: return
+
+        // Update title bar
+        titleLabel.text = panel.title
+        phaseLabel.text = panel.statusText
+        phaseLabel.foreground = panel.statusColor
+        phaseDot.foreground = panel.statusColor
+
+        // Show this agent's renderer in the card layout
+        (rendererCardPanel.layout as CardLayout).show(rendererCardPanel, agentId)
+    }
+
+    /**
+     * Auto-select the appropriate agent based on the current phase.
+     */
+    private fun autoSelectByPhase(phase: CoordinationPhase) {
+        val targetId = when (phase) {
+            CoordinationPhase.PLANNING, CoordinationPhase.READY -> sidebar.getRoutaId()
+            CoordinationPhase.EXECUTING, CoordinationPhase.WAVE_COMPLETE -> {
+                // Find the first active CRAFTER, or keep current
+                agentPanels.entries
+                    .firstOrNull { it.value.role == AgentCardPanel.AgentRole.CRAFTER && it.value.statusText == "ACTIVE" }
+                    ?.key ?: selectedAgentId ?: sidebar.getRoutaId()
+            }
+            CoordinationPhase.VERIFYING -> sidebar.getGateId()
+            CoordinationPhase.COMPLETED -> sidebar.getRoutaId()
+            CoordinationPhase.FAILED -> sidebar.getRoutaId()
+            CoordinationPhase.NEEDS_FIX -> sidebar.getRoutaId()
+            CoordinationPhase.IDLE -> selectedAgentId ?: sidebar.getRoutaId()
+        }
+        SwingUtilities.invokeLater {
+            sidebar.selectAgent(targetId)
+        }
+    }
+
+    // ── Model Change Handling ────────────────────────────────────────────
+
+    private fun handleModelChange(modelName: String) {
+        routaService.crafterModelKey.value = modelName
+
+        if (routaService.useAcpForRouta.value) {
+            routaService.routaModelKey.value = modelName
+            log.info("Agent model changed to: $modelName")
+        } else {
+            val configs = routaService.getAvailableLlmConfigs()
+            val selected = configs.find { it.name == modelName }
+            if (selected != null) {
+                routaService.setLlmModelConfig(selected)
+                log.info("LLM model changed to: ${selected.provider}/${selected.model}")
+            }
+        }
+    }
+
     /**
      * Update the agent popup menu with available agents.
-     * Called after agents are loaded.
      */
     private fun updateAgentPopup(agents: List<String>, selectedAgent: String?) {
         agentPopup.removeAll()
-        val agentCombo = routaSection.getModelCombo()
 
         for (agent in agents) {
             val menuItem = JMenuItem(agent).apply {
                 background = JBColor(0x161B22, 0x161B22)
                 foreground = JBColor(0xC9D1D9, 0xC9D1D9)
                 addActionListener {
-                    agentCombo.selectedItem = agent
+                    modelCombo.selectedItem = agent
                     agentLabel.text = agent
                 }
             }
             agentPopup.add(menuItem)
         }
 
-        // Update the label with selected agent
         if (selectedAgent != null) {
             agentLabel.text = selectedAgent
         } else if (agents.isNotEmpty()) {
@@ -428,43 +528,29 @@ class DispatcherPanel(
                 val config = configService.loadConfig()
                 val agentKeys = config.agents.keys.toList()
 
-                // When using ACP for ROUTA (default), we use ACP agents for ROUTA selector
                 val useAcpForRouta = routaService.useAcpForRouta.value
 
                 withContext(Dispatchers.EDT) {
                     if (agentKeys.isEmpty()) {
-                        val msg = "⚠️ No ACP agents detected. Configure agents in ~/.acp-manager/config.yaml"
+                        val msg = "No ACP agents detected. Configure agents in ~/.acp-manager/config.yaml"
                         log.warn(msg)
-                        routaSection.setPlanningText(msg)
+                        routaPanel.appendChunk(
+                            com.phodal.routa.core.provider.StreamChunk.Text("⚠️ $msg")
+                        )
                         return@withContext
                     }
 
-                    // Set available ACP agents for both ROUTA and CRAFTER selectors
+                    // Populate model combo
+                    modelCombo.removeAllItems()
                     if (useAcpForRouta) {
-                        // ROUTA uses ACP agents - populate ROUTA selector with ACP agents
-                        routaSection.setAvailableModels(agentKeys)
-                        log.info("ROUTA: Using ACP Agent mode. ${agentKeys.size} agent(s) available.")
+                        agentKeys.forEach { modelCombo.addItem(it) }
                     } else {
-                        // Legacy mode: ROUTA uses LLM configs (KoogAgent)
                         val llmConfigs = routaService.getAvailableLlmConfigs()
-                        val activeLlmConfig = routaService.getActiveLlmConfig()
-                        if (llmConfigs.isNotEmpty()) {
-                            val modelNames = llmConfigs.map { it.name.ifBlank { "${it.provider}/${it.model}" } }
-                            routaSection.setAvailableModels(modelNames)
-                            if (activeLlmConfig != null) {
-                                val activeName = activeLlmConfig.name.ifBlank { "${activeLlmConfig.provider}/${activeLlmConfig.model}" }
-                                routaSection.setSelectedModel(activeName)
-                            }
-                            log.info("ROUTA LLM: ${llmConfigs.size} model(s) available")
-                        } else {
-                            log.warn("No LLM configs found — ROUTA will use ACP agent as fallback")
-                        }
+                        val modelNames = llmConfigs.map { it.name.ifBlank { "${it.provider}/${it.model}" } }
+                        modelNames.forEach { modelCombo.addItem(it) }
                     }
 
-                    // Set available ACP agents for CRAFTERs
-                    crafterSection.setAvailableModels(agentKeys)
-
-                    // Prefer "claude" as default agent, fallback to config.activeAgent or first available
+                    // Prefer "claude" as default agent
                     val defaultAgent = when {
                         agentKeys.any { it.equals("claude", ignoreCase = true) } ->
                             agentKeys.first { it.equals("claude", ignoreCase = true) }
@@ -474,15 +560,10 @@ class DispatcherPanel(
                     }
 
                     if (defaultAgent != null) {
-                        crafterSection.setSelectedModel(defaultAgent)
-                        if (useAcpForRouta) {
-                            routaSection.setSelectedModel(defaultAgent)
-                        }
+                        modelCombo.selectedItem = defaultAgent
 
-                        // Update the agent popup in the unified input panel
                         updateAgentPopup(agentKeys, defaultAgent)
 
-                        // Initialize the Routa service with the default agent
                         val routaMode = if (useAcpForRouta) "ACP Agent ($defaultAgent)" else "KoogAgent"
                         log.info("Initializing Routa service: CRAFTER=$defaultAgent, ROUTA=$routaMode")
                         routaService.initialize(
@@ -491,20 +572,16 @@ class DispatcherPanel(
                             gateAgent = defaultAgent,
                         )
 
-                        val routaInfo = if (useAcpForRouta) {
-                            "ROUTA: $defaultAgent (ACP Agent)"
-                        } else {
-                            val llmConfig = routaService.getActiveLlmConfig()
-                            if (llmConfig != null) {
-                                "ROUTA: ${llmConfig.provider}/${llmConfig.model} (KoogAgent)"
-                            } else {
-                                "ROUTA: fallback to ACP"
-                            }
-                        }
-                        routaSection.setPlanningText("✓ Ready. CRAFTER: $defaultAgent | $routaInfo")
+                        routaPanel.appendChunk(
+                            com.phodal.routa.core.provider.StreamChunk.Text(
+                                "✓ Ready. Agent: $defaultAgent | Mode: $routaMode"
+                            )
+                        )
                     } else {
                         log.warn("No default agent found")
-                        routaSection.setPlanningText("⚠️ No default agent configured")
+                        routaPanel.appendChunk(
+                            com.phodal.routa.core.provider.StreamChunk.Text("⚠️ No default agent configured")
+                        )
                         updateAgentPopup(agentKeys, null)
                     }
 
@@ -513,7 +590,9 @@ class DispatcherPanel(
             } catch (e: Exception) {
                 log.warn("Failed to load agents: ${e.message}", e)
                 withContext(Dispatchers.EDT) {
-                    routaSection.setPlanningText("❌ Failed to load agents: ${e.message}")
+                    routaPanel.appendChunk(
+                        com.phodal.routa.core.provider.StreamChunk.Text("❌ Failed to load agents: ${e.message}")
+                    )
                 }
             }
         }
@@ -529,16 +608,12 @@ class DispatcherPanel(
             }
         }
 
-        // Observe coordination state (for phase mapping to UI)
+        // Observe coordination state → auto-select agent + update sidebar
         scope.launch {
             routaService.coordinationState.collectLatest { state ->
-                routaSection.updatePhase(state.phase)
-
-                // Update GATE section based on phase
-                when (state.phase) {
-                    CoordinationPhase.VERIFYING -> gateSection.updateStatus(true)
-                    CoordinationPhase.COMPLETED -> gateSection.updateStatus(false)
-                    else -> {}
+                withContext(Dispatchers.EDT) {
+                    updatePhaseUI(state.phase)
+                    autoSelectByPhase(state.phase)
                 }
             }
         }
@@ -546,52 +621,47 @@ class DispatcherPanel(
         // Observe ROUTA streaming chunks
         scope.launch {
             routaService.routaChunks.collect { chunk ->
-                routaSection.appendChunk(chunk)
+                routaPanel.appendChunk(chunk)
             }
         }
 
         // Observe GATE streaming chunks
         scope.launch {
             routaService.gateChunks.collect { chunk ->
-                gateSection.appendChunk(chunk)
+                gatePanel.appendChunk(chunk)
             }
         }
 
-        // Observe CRAFTER streaming chunks (for real-time output)
+        // Observe CRAFTER streaming chunks
         scope.launch {
-            routaService.crafterChunks.collect { (agentId, chunk) ->
-                crafterSection.appendChunk(agentId, chunk)
+            routaService.crafterChunks.collect { (taskId, chunk) ->
+                agentPanels[taskId]?.appendChunk(chunk)
             }
         }
 
-        // Observe CRAFTER states
+        // Observe CRAFTER states → create panels dynamically
         scope.launch {
             routaService.crafterStates.collectLatest { states ->
-                crafterSection.updateCrafterStates(states)
+                withContext(Dispatchers.EDT) {
+                    handleCrafterStatesUpdate(states)
+                }
             }
         }
 
-        // Observe MCP server URL - only update bottom status UI (removed from ROUTA and CRAFTER sections)
+        // Observe MCP server URL
         scope.launch {
             routaService.mcpServerUrl.collectLatest { url ->
-                // Update the MCP status UI components at the bottom
                 withContext(Dispatchers.EDT) {
                     currentMcpUrl = url
-
                     if (url != null) {
                         mcpUrlLabel.text = url
-                        mcpUrlLabel.foreground = JBColor(0x589DF6, 0x589DF6) // Blue for clickable link
+                        mcpUrlLabel.foreground = JBColor(0x589DF6, 0x589DF6)
                         mcpUrlLabel.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                        mcpStatusLabel.foreground = JBColor.GRAY // Gray until checked
+                        mcpStatusLabel.foreground = JBColor.GRAY
                         mcpStatusLabel.toolTipText = "Click refresh to check status"
                         mcpRefreshButton.isEnabled = true
-
-                        // Detect and display transport type
-                        val transportInfo = detectMcpTransportType(url)
-                        mcpTransportLabel.text = transportInfo
+                        mcpTransportLabel.text = detectMcpTransportType(url)
                         mcpTransportLabel.toolTipText = getTransportTooltip(url)
-
-                        // Auto-check status when URL becomes available
                         checkMcpServerStatus()
                     } else {
                         mcpUrlLabel.text = "MCP Server: not running"
@@ -606,12 +676,95 @@ class DispatcherPanel(
                 }
             }
         }
+    }
 
-        // Observe running state (for UI enable/disable)
-        scope.launch {
-            routaService.isRunning.collectLatest { running ->
-                // Could disable input while running
+    // ── CRAFTER State Management ─────────────────────────────────────────
+
+    private fun handleCrafterStatesUpdate(
+        states: Map<String, com.phodal.routa.core.viewmodel.CrafterStreamState>
+    ) {
+        var firstActiveId: String? = null
+
+        for ((taskId, state) in states) {
+            if (taskId !in agentPanels) {
+                // New CRAFTER task: create panel + sidebar card
+                val panel = AgentCardPanel(taskId, AgentCardPanel.AgentRole.CRAFTER)
+                panel.updateTitle(state.taskTitle.ifBlank { "Task ${taskId.take(8)}" })
+                agentPanels[taskId] = panel
+
+                // Add to card layout for left-side rendering
+                rendererCardPanel.add(panel.rendererScroll, taskId)
+
+                // Add sidebar card
+                sidebar.addCrafter(taskId, state.taskTitle.ifBlank { "Task ${taskId.take(8)}" })
             }
+
+            // Update status
+            val (statusText, statusColor) = when (state.status) {
+                AgentStatus.PENDING -> "PENDING" to AgentSidebarPanel.STATUS_IDLE
+                AgentStatus.ACTIVE -> "ACTIVE" to AgentSidebarPanel.STATUS_ACTIVE
+                AgentStatus.COMPLETED -> "COMPLETED" to AgentSidebarPanel.STATUS_COMPLETED
+                AgentStatus.ERROR -> "ERROR" to AgentSidebarPanel.STATUS_ERROR
+                AgentStatus.CANCELLED -> "CANCELLED" to AgentSidebarPanel.STATUS_PLANNING
+            }
+
+            agentPanels[taskId]?.updateStatus(statusText, statusColor)
+            agentPanels[taskId]?.updateTitle(state.taskTitle.ifBlank { "Task ${taskId.take(8)}" })
+            sidebar.updateAgentStatus(taskId, statusText, statusColor)
+            sidebar.updateAgentInfo(taskId, state.taskTitle.ifBlank { "Task ${taskId.take(8)}" })
+
+            if (state.status == AgentStatus.ACTIVE && firstActiveId == null) {
+                firstActiveId = taskId
+            }
+        }
+
+        // Auto-select the first active CRAFTER
+        if (firstActiveId != null) {
+            val currentPanel = selectedAgentId?.let { agentPanels[it] }
+            if (currentPanel == null || currentPanel.role != AgentCardPanel.AgentRole.CRAFTER ||
+                currentPanel.statusText != "ACTIVE") {
+                sidebar.selectAgent(firstActiveId)
+            }
+        }
+    }
+
+    // ── Phase UI Update ──────────────────────────────────────────────────
+
+    private fun updatePhaseUI(phase: CoordinationPhase) {
+        val (text, color) = when (phase) {
+            CoordinationPhase.IDLE -> "IDLE" to JBColor(0x6B7280, 0x9CA3AF)
+            CoordinationPhase.PLANNING -> "PLANNING" to JBColor(0xF59E0B, 0xF59E0B)
+            CoordinationPhase.READY -> "READY" to JBColor(0x3B82F6, 0x3B82F6)
+            CoordinationPhase.EXECUTING -> "EXECUTING" to JBColor(0x10B981, 0x10B981)
+            CoordinationPhase.WAVE_COMPLETE -> "WAVE DONE" to JBColor(0x10B981, 0x10B981)
+            CoordinationPhase.VERIFYING -> "VERIFYING" to JBColor(0xA78BFA, 0xA78BFA)
+            CoordinationPhase.NEEDS_FIX -> "NEEDS FIX" to JBColor(0xEF4444, 0xEF4444)
+            CoordinationPhase.COMPLETED -> "COMPLETED" to JBColor(0x10B981, 0x10B981)
+            CoordinationPhase.FAILED -> "FAILED" to JBColor(0xEF4444, 0xEF4444)
+        }
+
+        // Update ROUTA sidebar card
+        sidebar.updateAgentStatus(sidebar.getRoutaId(), text, color)
+        routaPanel.updateStatus(text, color)
+
+        // Update GATE sidebar based on phase
+        when (phase) {
+            CoordinationPhase.VERIFYING -> {
+                sidebar.updateAgentStatus(sidebar.getGateId(), "VERIFYING", AgentSidebarPanel.STATUS_VERIFYING)
+                gatePanel.updateStatus("VERIFYING", AgentSidebarPanel.STATUS_VERIFYING)
+            }
+            CoordinationPhase.COMPLETED -> {
+                sidebar.updateAgentStatus(sidebar.getGateId(), "DONE", AgentSidebarPanel.STATUS_COMPLETED)
+                gatePanel.updateStatus("DONE", AgentSidebarPanel.STATUS_COMPLETED)
+            }
+            else -> {}
+        }
+
+        // Update left title bar if the currently selected agent is affected
+        if (selectedAgentId == sidebar.getRoutaId()) {
+            phaseLabel.text = text
+            phaseLabel.foreground = color
+            phaseDot.foreground = color
         }
     }
 
@@ -620,19 +773,17 @@ class DispatcherPanel(
     private fun handlePhaseChange(phase: OrchestratorPhase) {
         when (phase) {
             is OrchestratorPhase.Initializing -> {
-                routaSection.updatePhase(CoordinationPhase.IDLE)
+                // no-op
             }
 
             is OrchestratorPhase.Planning -> {
-                routaSection.updatePhase(CoordinationPhase.PLANNING)
-                routaSection.clear()
-                crafterSection.clear()
-                gateSection.clear()
+                clearAllPanels()
             }
 
             is OrchestratorPhase.PlanReady -> {
-                routaSection.updatePhase(CoordinationPhase.READY)
-                routaSection.setPlanningText(phase.planOutput)
+                routaPanel.appendChunk(
+                    com.phodal.routa.core.provider.StreamChunk.Text("\n\n--- Plan Ready ---\n${phase.planOutput}")
+                )
             }
 
             is OrchestratorPhase.TasksRegistered -> {
@@ -640,36 +791,35 @@ class DispatcherPanel(
             }
 
             is OrchestratorPhase.WaveStarting -> {
-                routaSection.updatePhase(CoordinationPhase.EXECUTING)
+                // handled by coordinationState observer
             }
 
             is OrchestratorPhase.CrafterRunning -> {
-                // CrafterSectionPanel handles this via crafterStates
+                // handled by crafterStates observer
             }
 
             is OrchestratorPhase.CrafterCompleted -> {
-                // CrafterSectionPanel handles this via crafterStates
+                // handled by crafterStates observer
             }
 
             is OrchestratorPhase.VerificationStarting -> {
-                gateSection.updateStatus(true)
-                gateSection.clear()
+                gatePanel.clear()
             }
 
             is OrchestratorPhase.VerificationCompleted -> {
-                gateSection.updateStatus(false)
+                // handled by coordinationState observer
             }
 
             is OrchestratorPhase.NeedsFix -> {
-                routaSection.updatePhase(CoordinationPhase.NEEDS_FIX)
+                // handled by coordinationState observer
             }
 
             is OrchestratorPhase.Completed -> {
-                routaSection.updatePhase(CoordinationPhase.COMPLETED)
+                // handled by coordinationState observer
             }
 
             is OrchestratorPhase.MaxWavesReached -> {
-                routaSection.updatePhase(CoordinationPhase.COMPLETED)
+                // handled by coordinationState observer
             }
         }
     }
@@ -682,17 +832,17 @@ class DispatcherPanel(
             return
         }
 
-        // Check if service is initialized
         if (!routaService.isInitialized()) {
-            log.warn("Service not initialized yet, please wait for agents to load")
-            routaSection.setPlanningText("⚠️ Service not initialized. Please wait for agents to load or check your configuration.")
+            log.warn("Service not initialized yet")
+            routaPanel.appendChunk(
+                com.phodal.routa.core.provider.StreamChunk.Text(
+                    "⚠️ Service not initialized. Please wait for agents to load."
+                )
+            )
             return
         }
 
-        // Clear all panels
-        routaSection.clear()
-        crafterSection.clear()
-        gateSection.clear()
+        clearAllPanels()
 
         scope.launch {
             try {
@@ -700,8 +850,9 @@ class DispatcherPanel(
                 handleResult(result)
             } catch (e: Exception) {
                 log.warn("Execution failed: ${e.message}", e)
-                routaSection.updatePhase(CoordinationPhase.FAILED)
-                routaSection.setPlanningText("Execution failed: ${e.message}")
+                routaPanel.appendChunk(
+                    com.phodal.routa.core.provider.StreamChunk.Text("❌ Execution failed: ${e.message}")
+                )
             }
         }
     }
@@ -709,49 +860,77 @@ class DispatcherPanel(
     private fun stopExecution() {
         log.info("Stopping execution...")
         routaService.stopExecution()
-        routaSection.appendChunk(
+        routaPanel.appendChunk(
             com.phodal.routa.core.provider.StreamChunk.Text("\n\n⏹ Execution stopped by user.")
         )
     }
 
-    /**
-     * Start a new session - clears all panels and resets state.
-     */
     private fun startNewSession() {
         log.info("Starting new session...")
-        routaSection.clear()
-        crafterSection.clear()
-        gateSection.clear()
-        routaSection.updatePhase(CoordinationPhase.IDLE)
-        routaSection.setPlanningText("✓ New session started. Ready for input.")
+        clearAllPanels()
+        routaPanel.appendChunk(
+            com.phodal.routa.core.provider.StreamChunk.Text("✓ New session started. Ready for input.")
+        )
+        sidebar.selectAgent(sidebar.getRoutaId())
+    }
+
+    /**
+     * Clear all agent panels, remove dynamic CRAFTER panels, and reset sidebar.
+     */
+    private fun clearAllPanels() {
+        // Clear fixed panels
+        routaPanel.clear()
+        gatePanel.clear()
+
+        // Remove dynamic CRAFTER panels
+        val crafterIds = agentPanels.keys.filter {
+            it != routaPanel.agentId && it != gatePanel.agentId
+        }
+        for (id in crafterIds) {
+            agentPanels[id]?.let { panel ->
+                rendererCardPanel.remove(panel.rendererScroll)
+            }
+            agentPanels.remove(id)
+        }
+
+        // Reset sidebar (keeps ROUTA and GATE, removes CRAFTERs)
+        sidebar.clear()
+
+        rendererCardPanel.revalidate()
+        rendererCardPanel.repaint()
     }
 
     private fun handleResult(result: OrchestratorResult) {
         when (result) {
             is OrchestratorResult.Success -> {
-                routaSection.updatePhase(CoordinationPhase.COMPLETED)
                 val summary = result.taskSummaries.joinToString("\n") { task ->
                     "  ${task.title}: ${task.status} (verdict: ${task.verdict ?: "N/A"})"
                 }
-                routaSection.appendChunk(
+                routaPanel.appendChunk(
                     com.phodal.routa.core.provider.StreamChunk.Text("\n\n--- Results ---\n$summary")
                 )
 
-                // Update GATE verdict from task summaries
                 val allApproved = result.taskSummaries.all {
                     it.verdict == com.phodal.routa.core.model.VerificationVerdict.APPROVED
                 }
                 if (allApproved) {
-                    gateSection.setVerdict(com.phodal.routa.core.model.VerificationVerdict.APPROVED)
+                    gatePanel.appendChunk(
+                        com.phodal.routa.core.provider.StreamChunk.Text("✅ All tasks APPROVED")
+                    )
+                    sidebar.updateAgentStatus(sidebar.getGateId(), "APPROVED", AgentSidebarPanel.STATUS_COMPLETED)
                 }
             }
 
             is OrchestratorResult.NoTasks -> {
-                routaSection.setPlanningText("No tasks generated from the plan:\n${result.planOutput}")
+                routaPanel.appendChunk(
+                    com.phodal.routa.core.provider.StreamChunk.Text(
+                        "No tasks generated from the plan:\n${result.planOutput}"
+                    )
+                )
             }
 
             is OrchestratorResult.MaxWavesReached -> {
-                routaSection.appendChunk(
+                routaPanel.appendChunk(
                     com.phodal.routa.core.provider.StreamChunk.Text(
                         "\n\nMax waves (${result.waves}) reached. Some tasks may be incomplete."
                     )
@@ -759,40 +938,23 @@ class DispatcherPanel(
             }
 
             is OrchestratorResult.Failed -> {
-                routaSection.updatePhase(CoordinationPhase.FAILED)
-                routaSection.setPlanningText("Orchestration failed: ${result.error}")
+                routaPanel.appendChunk(
+                    com.phodal.routa.core.provider.StreamChunk.Text("❌ Orchestration failed: ${result.error}")
+                )
             }
         }
     }
 
     // ── MCP Server Status ───────────────────────────────────────────────
 
-    /**
-     * Detect MCP transport type from URL.
-     *
-     * Returns a short label indicating the available transports:
-     * - "WS + SSE" - WebSocket at /mcp + Legacy SSE at /sse (RoutaMcpWebSocketServer)
-     * - "HTTP + WS + SSE" - Streamable HTTP + WebSocket + Legacy SSE (RoutaMcpStreamableHttpServer)
-     */
     private fun detectMcpTransportType(url: String): String {
         return when {
-            // If URL ends with /mcp, it's the WebSocket endpoint
-            // The server also provides /sse for legacy SSE
             url.endsWith("/mcp") -> "[WS + SSE]"
-
-            // If URL ends with /sse, it's the legacy SSE endpoint
-            // The server also provides /mcp for WebSocket
             url.endsWith("/sse") -> "[SSE + WS]"
-
-            // Future: detect Streamable HTTP server
-            // This would require checking server capabilities or a different URL pattern
             else -> "[Unknown]"
         }
     }
 
-    /**
-     * Get detailed tooltip for transport type.
-     */
     private fun getTransportTooltip(url: String): String {
         return when {
             url.endsWith("/mcp") -> """
@@ -824,23 +986,18 @@ class DispatcherPanel(
 
         scope.launch(Dispatchers.IO) {
             try {
-                val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                val connection = java.net.URI(url).toURL().openConnection() as java.net.HttpURLConnection
                 connection.requestMethod = "GET"
                 connection.connectTimeout = 2000
                 connection.readTimeout = 2000
-
-                // Get response code - any response (including 4xx/5xx) means server is running
                 val responseCode = connection.responseCode
 
                 withContext(Dispatchers.EDT) {
-                    // Green if we got ANY response (server is running)
-                    // 4xx/5xx just means the endpoint doesn't exist, but server is up
                     updateMcpStatus(url, true, responseCode)
                 }
 
                 connection.disconnect()
             } catch (e: Exception) {
-                // Red only if we can't connect at all (connection refused, timeout, etc.)
                 withContext(Dispatchers.EDT) {
                     updateMcpStatus(url, false, null)
                 }
@@ -850,7 +1007,7 @@ class DispatcherPanel(
 
     private fun updateMcpStatus(url: String, isRunning: Boolean, responseCode: Int?) {
         if (isRunning) {
-            mcpStatusLabel.foreground = JBColor(0x3FB950, 0x3FB950) // Green
+            mcpStatusLabel.foreground = JBColor(0x3FB950, 0x3FB950)
             val statusText = if (responseCode != null) {
                 "MCP Server is running (HTTP $responseCode)"
             } else {
@@ -858,7 +1015,7 @@ class DispatcherPanel(
             }
             mcpStatusLabel.toolTipText = statusText
         } else {
-            mcpStatusLabel.foreground = JBColor(0xF85149, 0xF85149) // Red
+            mcpStatusLabel.foreground = JBColor(0xF85149, 0xF85149)
             mcpStatusLabel.toolTipText = "MCP Server is not responding (connection failed)"
         }
     }
