@@ -141,6 +141,10 @@ class AgentSession(
 
             val cwd = project.basePath ?: System.getProperty("user.dir") ?: "."
 
+            // Start the Routa MCP server for all agents (not just Claude Code)
+            // This allows any agent to use coordination tools
+            startMcpServer()
+
             // Check if this is Claude Code (non-standard API)
             if (config.isClaudeCode()) {
                 connectClaudeCode(config, cwd)
@@ -165,19 +169,32 @@ class AgentSession(
     }
 
     /**
+     * Start the Routa MCP server if not already running.
+     */
+    private fun startMcpServer() {
+        if (routaMcpServer != null && routaMcpServer!!.isRunning) {
+            log.info("Routa MCP server already running on port ${routaMcpServer!!.port} for '$agentKey'")
+            return
+        }
+
+        val mcpServer = RoutaMcpWebSocketServer(workspaceId = agentKey)
+        mcpServer.start()
+        this.routaMcpServer = mcpServer
+        log.info("Routa MCP server started on port ${mcpServer.port} for '$agentKey'")
+        log.info("MCP Server URL: ${mcpServerUrl}")
+    }
+
+    /**
      * Connect using Claude Code's stream-json protocol.
      */
     private fun connectClaudeCode(config: AcpAgentConfig, cwd: String) {
         log.info("Connecting to Claude Code for '$agentKey' using stream-json mode")
         isClaudeCodeMode = true
 
-        // Start the Routa MCP server so Claude Code can use coordination tools
-        val mcpServer = RoutaMcpWebSocketServer(workspaceId = agentKey)
-        mcpServer.start()
-        this.routaMcpServer = mcpServer
-        val mcpConfigJson = mcpServer.toMcpConfigJson()
-        log.info("Routa MCP server started on port ${mcpServer.port} for '$agentKey'")
-        log.info("MCP Config: $mcpConfigJson")
+        // MCP server is already started in connect() method
+        // Get the MCP config JSON for Claude Code integration
+        val mcpConfigJson = routaMcpServer?.toMcpConfigJson() ?: ""
+        log.info("Using MCP Config for Claude Code: $mcpConfigJson")
 
         val claudeCodeClient = ClaudeCodeClient(
             scope = scope,

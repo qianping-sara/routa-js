@@ -46,7 +46,10 @@ data class AcpAgentConfig(
      * Check if this is a Claude Code agent based on command name or nonStandardApi flag.
      */
     fun isClaudeCode(): Boolean {
-        return nonStandardApi || command.endsWith("claude") || command.contains("/claude")
+        val result = nonStandardApi || command.endsWith("claude") || command.contains("/claude")
+        // Debug logging
+        println("DEBUG: isClaudeCode() for command='$command': nonStandardApi=$nonStandardApi, endsWith=${command.endsWith("claude")}, contains=${command.contains("/claude")}, result=$result")
+        return result
     }
 }
 
