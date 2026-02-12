@@ -147,6 +147,34 @@ object RoutaFactory {
 
         return CapabilityBasedRouter(*providers.toTypedArray())
     }
+
+    /**
+     * Create a Workspace Agent provider.
+     *
+     * The Workspace Agent is a single agent that combines planning AND implementation
+     * capabilities. Unlike the multi-agent pipeline (ROUTA→CRAFTER→GATE), the workspace
+     * agent can directly read/write files while also coordinating with other agents.
+     *
+     * Inspired by Intent by Augment's workspace agent architecture.
+     *
+     * @param system The Routa system (stores, coordinator, tools).
+     * @param workspaceId The workspace to operate in.
+     * @param cwd Working directory for file operations.
+     * @param modelConfig Optional model configuration override.
+     */
+    fun createWorkspaceProvider(
+        system: RoutaSystem,
+        workspaceId: String,
+        cwd: String = ".",
+        modelConfig: NamedModelConfig? = null,
+    ): AgentProvider {
+        return WorkspaceAgentProvider(
+            agentTools = system.tools,
+            workspaceId = workspaceId,
+            cwd = cwd,
+            modelConfig = modelConfig,
+        )
+    }
 }
 
 /**

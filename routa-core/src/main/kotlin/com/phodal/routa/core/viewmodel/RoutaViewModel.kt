@@ -14,6 +14,7 @@ import com.phodal.routa.core.runner.OrchestratorResult
 import com.phodal.routa.core.runner.RoutaOrchestrator
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import java.util.UUID
 
 /**
  * Platform-agnostic ViewModel for the Routa multi-agent orchestrator.
@@ -136,6 +137,18 @@ class RoutaViewModel(
      */
     var useEnhancedRoutaPrompt: Boolean = true
 
+    /**
+     * The agent execution mode.
+     *
+     * - [AgentMode.ACP_AGENT]: Multi-agent pipeline (ROUTA → CRAFTER → GATE).
+     *   The orchestrator coordinates agents via the capability-based router.
+     * - [AgentMode.WORKSPACE]: Single workspace agent that plans and implements directly.
+     *   The workspace agent has both file tools and agent coordination tools.
+     *
+     * Default is [AgentMode.ACP_AGENT] for backward compatibility.
+     */
+    var agentMode: AgentMode = AgentMode.ACP_AGENT
+
     // ── Public API ──────────────────────────────────────────────────────
 
     /**
@@ -210,13 +223,20 @@ class RoutaViewModel(
     }
 
     /**
-     * Execute a user request through the full ROUTA → CRAFTER → GATE pipeline.
+     * Execute a user request.
      *
-     * This is a suspending function that runs the complete orchestration flow:
+     * Behavior depends on the current [agentMode]:
+     *
+     * **[AgentMode.ACP_AGENT]** — Full ROUTA → CRAFTER → GATE pipeline:
      * 1. ROUTA plans tasks from the user request
      * 2. CRAFTERs execute the planned tasks
      * 3. GATE verifies all completed work
      * 4. If not approved, CRAFTERs retry (up to max waves)
+     *
+     * **[AgentMode.WORKSPACE]** — Single workspace agent:
+     * 1. The workspace agent directly plans and implements the request
+     * 2. Has access to both file tools and agent coordination tools
+     * 3. Can optionally delegate to other agents if needed
      *
      * State changes are observable via [phase], [crafterStates], [routaChunks], etc.
      *
@@ -225,6 +245,16 @@ class RoutaViewModel(
      * @throws IllegalStateException if not initialized.
      */
     suspend fun execute(userRequest: String): OrchestratorResult {
+        return when (agentMode) {
+            AgentMode.WORKSPACE -> executeWorkspace(userRequest)
+            AgentMode.ACP_AGENT -> executeAcpAgent(userRequest)
+        }
+    }
+
+    /**
+     * Execute using the multi-agent ROUTA → CRAFTER → GATE pipeline.
+     */
+    private suspend fun executeAcpAgent(userRequest: String): OrchestratorResult {
         val orch = orchestrator
             ?: throw IllegalStateException("ViewModel not initialized. Call initialize() first.")
 
@@ -241,7 +271,7 @@ class RoutaViewModel(
             userRequest
         }
 
-        debugLog.log(DebugCategory.PHASE, "Execution starting", mapOf(
+        debugLog.log(DebugCategory.PHASE, "Execution starting (ACP_AGENT mode)", mapOf(
             "userRequest" to userRequest.take(200),
             "enhancedPrompt" to useEnhancedRoutaPrompt.toString(),
         ))
@@ -267,6 +297,96 @@ class RoutaViewModel(
             cancelledResult
         } catch (e: Exception) {
             debugLog.log(DebugCategory.ERROR, "Execution failed: ${e.message}")
+            val failedResult = OrchestratorResult.Failed(e.message ?: "Unknown error")
+            _result.value = failedResult
+            failedResult
+        } finally {
+            executionJob = null
+            _isRunning.value = false
+        }
+    }
+
+    /**
+     * Execute using the single Workspace Agent mode.
+     *
+     * The workspace agent directly handles the request with its combined
+     * file operation and agent coordination tools.
+     *
+     * Uses [AgentProvider.run] (not `runStreaming`) because the workspace agent
+     * needs Koog's AIAgent loop for tool calling. The AIAgent iteratively:
+     * 1. Sends the prompt to the LLM
+     * 2. LLM responds with tool calls (read_file, list_agents, etc.)
+     * 3. Koog executes the tools and feeds results back
+     * 4. Repeat until done
+     *
+     * Streaming is still provided via [routaChunks] for the final output.
+     */
+    private suspend fun executeWorkspace(userRequest: String): OrchestratorResult {
+        val currentProvider = provider
+            ?: throw IllegalStateException("ViewModel not initialized. Call initialize() first.")
+
+        _isRunning.value = true
+        _result.value = null
+        _crafterStates.value = emptyMap()
+        agentRoleMap.clear()
+        crafterTaskMap.clear()
+        taskTitleMap.clear()
+
+        debugLog.log(DebugCategory.PHASE, "Execution starting (WORKSPACE mode)", mapOf(
+            "userRequest" to userRequest.take(200),
+            "provider" to currentProvider.capabilities().name,
+        ))
+
+        _phase.value = OrchestratorPhase.Planning
+
+        val workspaceAgentId = "workspace-${UUID.randomUUID().toString().take(8)}"
+        agentRoleMap[workspaceAgentId] = AgentRole.ROUTA
+
+        // Emit heartbeat to indicate we're alive
+        _routaChunks.tryEmit(StreamChunk.Heartbeat())
+
+        return try {
+            val result = coroutineScope {
+                val job = async {
+                    // Use run() instead of runStreaming() to get Koog AIAgent tool calling.
+                    // Koog's AIAgent handles the LLM↔tool loop internally:
+                    //   LLM → tool_call(list_files) → execute → result → LLM → tool_call(write_file) → ...
+                    val output = currentProvider.run(
+                        role = AgentRole.ROUTA,
+                        agentId = workspaceAgentId,
+                        prompt = userRequest,
+                    )
+
+                    // Emit the final output as a text chunk for UI rendering
+                    _routaChunks.tryEmit(StreamChunk.Text(output))
+                    _routaChunks.tryEmit(StreamChunk.Completed("end"))
+
+                    debugLog.log(DebugCategory.PHASE, "Workspace agent completed", mapOf(
+                        "outputLength" to output.length.toString(),
+                        "preview" to output.take(300),
+                    ))
+
+                    _phase.value = OrchestratorPhase.Completed
+
+                    OrchestratorResult.Success(emptyList()) as OrchestratorResult
+                }
+                executionJob = job
+                job.await()
+            }
+
+            debugLog.log(DebugCategory.PHASE, "Workspace execution completed", mapOf(
+                "result" to result::class.simpleName.orEmpty(),
+            ))
+
+            _result.value = result
+            result
+        } catch (e: CancellationException) {
+            debugLog.log(DebugCategory.STOP, "Workspace execution cancelled by user")
+            val cancelledResult = OrchestratorResult.Failed("Execution cancelled by user")
+            _result.value = cancelledResult
+            cancelledResult
+        } catch (e: Exception) {
+            debugLog.log(DebugCategory.ERROR, "Workspace execution failed: ${e.message}")
             val failedResult = OrchestratorResult.Failed(e.message ?: "Unknown error")
             _result.value = failedResult
             failedResult

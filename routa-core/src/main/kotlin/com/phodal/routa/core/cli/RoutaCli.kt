@@ -8,6 +8,7 @@ import com.phodal.routa.core.provider.CapabilityBasedRouter
 import com.phodal.routa.core.provider.StreamChunk
 import com.phodal.routa.core.provider.ThinkingPhase
 import com.phodal.routa.core.runner.*
+import com.phodal.routa.core.viewmodel.AgentMode
 import com.phodal.routa.core.viewmodel.RoutaViewModel
 import kotlinx.coroutines.*
 
@@ -31,6 +32,7 @@ import kotlinx.coroutines.*
  * ./gradlew :routa-core:run
  * ./gradlew :routa-core:run --args="--cwd /path/to/project"
  * ./gradlew :routa-core:run --args="--crafter claude-code"
+ * ./gradlew :routa-core:run --args="--workspace"
  * ```
  */
 fun main(args: Array<String>) {
@@ -77,25 +79,32 @@ fun main(args: Array<String>) {
     }
     println()
 
-    // Resolve CWD and crafter override
+    // Resolve CWD, crafter override, and agent mode
     var cwd = System.getProperty("user.dir") ?: "."
     var crafterOverride: String? = null
+    var useWorkspaceMode = false
     var i = 0
     while (i < args.size) {
         when (args[i]) {
             "--cwd" -> { i++; if (i < args.size) cwd = args[i] }
             "--crafter" -> { i++; if (i < args.size) crafterOverride = args[i] }
+            "--workspace" -> useWorkspaceMode = true
             else -> cwd = args[i]
         }
         i++
     }
     println("  Working directory: $cwd")
+    println("  Agent mode: ${if (useWorkspaceMode) "WORKSPACE (single agent)" else "ACP_AGENT (multi-agent pipeline)"}")
 
     // Create system
     val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    // Build the provider using capability-based routing
-    val provider = buildProvider(scope, cwd, crafterOverride)
+    // Build the provider using capability-based routing or workspace mode
+    val provider = if (useWorkspaceMode) {
+        buildWorkspaceProvider(scope, cwd)
+    } else {
+        buildProvider(scope, cwd, crafterOverride)
+    }
 
     // Print provider routing info
     printProviderInfo(provider)
@@ -120,6 +129,7 @@ fun main(args: Array<String>) {
         // Initialize the ViewModel for this session
         // Don't use enhanced prompt — the orchestrator handles prompt building
         viewModel.useEnhancedRoutaPrompt = false
+        viewModel.agentMode = if (useWorkspaceMode) AgentMode.WORKSPACE else AgentMode.ACP_AGENT
         viewModel.initialize(provider, workspaceId)
 
         // Collect streams in parallel for real-time CLI output
@@ -201,6 +211,22 @@ private fun buildProvider(scope: CoroutineScope, cwd: String, crafterOverride: S
         claudePath = if (isClaudeCode) crafterInfo?.second?.command else null,
         modelConfig = RoutaConfigLoader.getActiveModelConfig(),
         resilient = true,
+    )
+}
+
+/**
+ * Build a [WorkspaceAgentProvider] for single-agent workspace mode.
+ *
+ * The workspace agent combines planning and implementation in a single agent
+ * with file tools and agent coordination tools.
+ */
+private fun buildWorkspaceProvider(scope: CoroutineScope, cwd: String): AgentProvider {
+    val routa = RoutaFactory.createInMemory(scope)
+    return RoutaFactory.createWorkspaceProvider(
+        system = routa,
+        workspaceId = "cli-workspace",
+        cwd = cwd,
+        modelConfig = RoutaConfigLoader.getActiveModelConfig(),
     )
 }
 
