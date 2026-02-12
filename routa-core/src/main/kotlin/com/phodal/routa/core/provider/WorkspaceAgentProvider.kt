@@ -15,6 +15,7 @@ import ai.koog.prompt.executor.llms.all.*
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
+import com.phodal.routa.core.koog.RoutaAgentFactory
 import kotlinx.coroutines.flow.cancellable
 import java.util.concurrent.ConcurrentHashMap
 
@@ -273,8 +274,8 @@ class WorkspaceAgentProvider(
                 "No active model config found. Please configure ~/.autodev/config.yaml"
             )
 
-        val executor = createExecutor(config)
-        val model = createModel(config)
+        val executor = RoutaAgentFactory.createExecutor(config)
+        val model = RoutaAgentFactory.createModel(config)
         val toolRegistry = WorkspaceToolRegistry.create(agentTools, workspaceId, cwd)
 
         return AIAgent(
@@ -299,62 +300,10 @@ class WorkspaceAgentProvider(
             )
 
         return LLMComponents(
-            executor = createExecutor(config),
-            model = createModel(config),
+            executor = RoutaAgentFactory.createExecutor(config),
+            model = RoutaAgentFactory.createModel(config),
             systemPrompt = WORKSPACE_SYSTEM_PROMPT,
         )
     }
 
-    private fun createExecutor(config: NamedModelConfig): SingleLLMPromptExecutor {
-        val provider = LLMProviderType.fromString(config.provider)
-            ?: throw IllegalArgumentException("Unknown provider: ${config.provider}")
-
-        return when (provider) {
-            LLMProviderType.OPENAI -> simpleOpenAIExecutor(config.apiKey)
-            LLMProviderType.ANTHROPIC -> simpleAnthropicExecutor(config.apiKey)
-            LLMProviderType.GOOGLE -> simpleGoogleAIExecutor(config.apiKey)
-            LLMProviderType.DEEPSEEK -> SingleLLMPromptExecutor(DeepSeekLLMClient(config.apiKey))
-            LLMProviderType.OLLAMA -> simpleOllamaAIExecutor(
-                baseUrl = config.baseUrl.ifEmpty { "http://localhost:11434" }
-            )
-            LLMProviderType.OPENROUTER -> simpleOpenRouterExecutor(config.apiKey)
-        }
-    }
-
-    private fun createModel(config: NamedModelConfig): LLModel {
-        val provider = LLMProviderType.fromString(config.provider)
-            ?: LLMProviderType.OPENAI
-
-        val llmProvider = when (provider) {
-            LLMProviderType.OPENAI -> LLMProvider.OpenAI
-            LLMProviderType.ANTHROPIC -> LLMProvider.Anthropic
-            LLMProviderType.GOOGLE -> LLMProvider.Google
-            LLMProviderType.DEEPSEEK -> LLMProvider.DeepSeek
-            LLMProviderType.OLLAMA -> LLMProvider.Ollama
-            LLMProviderType.OPENROUTER -> LLMProvider.OpenRouter
-        }
-
-        val (contextLength, maxOutputTokens) = when (provider) {
-            LLMProviderType.DEEPSEEK -> when {
-                config.model.contains("reasoner") -> 64_000L to 64_000L
-                else -> 64_000L to 8_000L
-            }
-            LLMProviderType.ANTHROPIC -> 200_000L to 8_192L
-            LLMProviderType.GOOGLE -> 1_000_000L to 8_192L
-            else -> config.maxTokens.toLong() to 4_096L
-        }
-
-        return LLModel(
-            provider = llmProvider,
-            id = config.model,
-            capabilities = listOf(
-                LLMCapability.Completion,
-                LLMCapability.Temperature,
-                LLMCapability.Tools,
-                LLMCapability.ToolChoice,
-            ),
-            contextLength = contextLength,
-            maxOutputTokens = maxOutputTokens,
-        )
-    }
 }

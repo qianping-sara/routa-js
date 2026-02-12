@@ -123,63 +123,67 @@ class RoutaAgentFactory(
         )
     }
 
-    /**
-     * Create a SingleLLMPromptExecutor from the config.
-     */
-    private fun createExecutor(config: NamedModelConfig): SingleLLMPromptExecutor {
-        val provider = LLMProviderType.fromString(config.provider)
-            ?: throw IllegalArgumentException("Unknown provider: ${config.provider}")
+    companion object {
+        /**
+         * Create an LLModel from the config.
+         */
+        fun createModel(config: NamedModelConfig): LLModel {
+            val provider = LLMProviderType.fromString(config.provider)
+                ?: LLMProviderType.OPENAI
 
-        return when (provider) {
-            LLMProviderType.OPENAI -> simpleOpenAIExecutor(config.apiKey)
-            LLMProviderType.ANTHROPIC -> simpleAnthropicExecutor(config.apiKey)
-            LLMProviderType.GOOGLE -> simpleGoogleAIExecutor(config.apiKey)
-            LLMProviderType.DEEPSEEK -> SingleLLMPromptExecutor(DeepSeekLLMClient(config.apiKey))
-            LLMProviderType.OLLAMA -> simpleOllamaAIExecutor(
-                baseUrl = config.baseUrl.ifEmpty { "http://localhost:11434" }
-            )
-            LLMProviderType.OPENROUTER -> simpleOpenRouterExecutor(config.apiKey)
-        }
-    }
-
-    /**
-     * Create an LLModel from the config.
-     */
-    private fun createModel(config: NamedModelConfig): LLModel {
-        val provider = LLMProviderType.fromString(config.provider)
-            ?: LLMProviderType.OPENAI
-
-        val llmProvider = when (provider) {
-            LLMProviderType.OPENAI -> LLMProvider.OpenAI
-            LLMProviderType.ANTHROPIC -> LLMProvider.Anthropic
-            LLMProviderType.GOOGLE -> LLMProvider.Google
-            LLMProviderType.DEEPSEEK -> LLMProvider.DeepSeek
-            LLMProviderType.OLLAMA -> LLMProvider.Ollama
-            LLMProviderType.OPENROUTER -> LLMProvider.OpenRouter
-        }
-
-        // Context/output lengths per provider
-        val (contextLength, maxOutputTokens) = when (provider) {
-            LLMProviderType.DEEPSEEK -> when {
-                config.model.contains("reasoner") -> 64_000L to 64_000L
-                else -> 64_000L to 8_000L
+            val llmProvider = when (provider) {
+                LLMProviderType.OPENAI -> LLMProvider.OpenAI
+                LLMProviderType.ANTHROPIC -> LLMProvider.Anthropic
+                LLMProviderType.GOOGLE -> LLMProvider.Google
+                LLMProviderType.DEEPSEEK -> LLMProvider.DeepSeek
+                LLMProviderType.OLLAMA -> LLMProvider.Ollama
+                LLMProviderType.OPENROUTER -> LLMProvider.OpenRouter
             }
-            LLMProviderType.ANTHROPIC -> 200_000L to 8_192L
-            LLMProviderType.GOOGLE -> 1_000_000L to 8_192L
-            else -> config.maxTokens.toLong() to 4_096L
+
+            // Context/output lengths per provider
+            val (contextLength, maxOutputTokens) = when (provider) {
+                LLMProviderType.DEEPSEEK -> when {
+                    config.model.contains("reasoner") -> 64_000L to 64_000L
+                    else -> 64_000L to 8_000L
+                }
+
+                LLMProviderType.ANTHROPIC -> 200_000L to 8_192L
+                LLMProviderType.GOOGLE -> 1_000_000L to 8_192L
+                else -> config.maxTokens.toLong() to 4_096L
+            }
+
+            return LLModel(
+                provider = llmProvider,
+                id = config.model,
+                capabilities = listOf(
+                    LLMCapability.Completion,
+                    LLMCapability.Temperature,
+                    LLMCapability.Tools,
+                    LLMCapability.ToolChoice,
+                ),
+                contextLength = contextLength,
+                maxOutputTokens = maxOutputTokens,
+            )
         }
 
-        return LLModel(
-            provider = llmProvider,
-            id = config.model,
-            capabilities = listOf(
-                LLMCapability.Completion,
-                LLMCapability.Temperature,
-                LLMCapability.Tools,
-                LLMCapability.ToolChoice,
-            ),
-            contextLength = contextLength,
-            maxOutputTokens = maxOutputTokens,
-        )
+        /**
+         * Create a SingleLLMPromptExecutor from the config.
+         */
+        fun createExecutor(config: NamedModelConfig): SingleLLMPromptExecutor {
+            val provider = LLMProviderType.fromString(config.provider)
+                ?: throw IllegalArgumentException("Unknown provider: ${config.provider}")
+
+            return when (provider) {
+                LLMProviderType.OPENAI -> simpleOpenAIExecutor(config.apiKey)
+                LLMProviderType.ANTHROPIC -> simpleAnthropicExecutor(config.apiKey)
+                LLMProviderType.GOOGLE -> simpleGoogleAIExecutor(config.apiKey)
+                LLMProviderType.DEEPSEEK -> SingleLLMPromptExecutor(DeepSeekLLMClient(config.apiKey))
+                LLMProviderType.OLLAMA -> simpleOllamaAIExecutor(
+                    baseUrl = config.baseUrl.ifEmpty { "http://localhost:11434" }
+                )
+
+                LLMProviderType.OPENROUTER -> simpleOpenRouterExecutor(config.apiKey)
+            }
+        }
     }
 }
