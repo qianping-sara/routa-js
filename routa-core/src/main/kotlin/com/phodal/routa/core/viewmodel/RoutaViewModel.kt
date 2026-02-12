@@ -307,19 +307,13 @@ class RoutaViewModel(
     }
 
     /**
-     * Execute using the single Workspace Agent mode.
+     * Execute using the single Workspace Agent mode with streaming.
      *
-     * The workspace agent directly handles the request with its combined
-     * file operation and agent coordination tools.
+     * Uses plain AI Streaming API ([AgentProvider.runStreaming]) instead of Koog's
+     * AIAgent loop. This gives real-time token-by-token streaming to the UI.
      *
-     * Uses [AgentProvider.run] (not `runStreaming`) because the workspace agent
-     * needs Koog's AIAgent loop for tool calling. The AIAgent iteratively:
-     * 1. Sends the prompt to the LLM
-     * 2. LLM responds with tool calls (read_file, list_agents, etc.)
-     * 3. Koog executes the tools and feeds results back
-     * 4. Repeat until done
-     *
-     * Streaming is still provided via [routaChunks] for the final output.
+     * The LLM receives the workspace system prompt + user request, and streams
+     * its response directly to the frontend via [routaChunks].
      */
     private suspend fun executeWorkspace(userRequest: String): OrchestratorResult {
         val currentProvider = provider
@@ -332,7 +326,7 @@ class RoutaViewModel(
         crafterTaskMap.clear()
         taskTitleMap.clear()
 
-        debugLog.log(DebugCategory.PHASE, "Execution starting (WORKSPACE mode)", mapOf(
+        debugLog.log(DebugCategory.PHASE, "Execution starting (WORKSPACE streaming mode)", mapOf(
             "userRequest" to userRequest.take(200),
             "provider" to currentProvider.capabilities().name,
         ))
@@ -342,26 +336,21 @@ class RoutaViewModel(
         val workspaceAgentId = "workspace-${UUID.randomUUID().toString().take(8)}"
         agentRoleMap[workspaceAgentId] = AgentRole.ROUTA
 
-        // Emit heartbeat to indicate we're alive
-        _routaChunks.tryEmit(StreamChunk.Heartbeat())
-
         return try {
             val result = coroutineScope {
                 val job = async {
-                    // Use run() instead of runStreaming() to get Koog AIAgent tool calling.
-                    // Koog's AIAgent handles the LLM↔tool loop internally:
-                    //   LLM → tool_call(list_files) → execute → result → LLM → tool_call(write_file) → ...
-                    val output = currentProvider.run(
+                    // Use runStreaming() for real-time streaming to the UI.
+                    // No agent tool-calling loop — just a single LLM streaming call.
+                    val output = currentProvider.runStreaming(
                         role = AgentRole.ROUTA,
                         agentId = workspaceAgentId,
                         prompt = userRequest,
-                    )
+                    ) { chunk ->
+                        // Forward all streaming chunks to the UI via routaChunks
+                        _routaChunks.tryEmit(chunk)
+                    }
 
-                    // Emit the final output as a text chunk for UI rendering
-                    _routaChunks.tryEmit(StreamChunk.Text(output))
-                    _routaChunks.tryEmit(StreamChunk.Completed("end"))
-
-                    debugLog.log(DebugCategory.PHASE, "Workspace agent completed", mapOf(
+                    debugLog.log(DebugCategory.PHASE, "Workspace streaming completed", mapOf(
                         "outputLength" to output.length.toString(),
                         "preview" to output.take(300),
                     ))
