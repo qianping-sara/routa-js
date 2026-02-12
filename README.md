@@ -1,8 +1,6 @@
-# Routa for IntelliJ IDEA
+# Routa
 
 <!-- Plugin description -->
-Manage multiple ACP (Agent Client Protocol) compatible coding agents directly from your IDE.
-
 Routa provides multi-agent session management, real-time streaming chat interface, tool call visualization, and efficient process lifecycle management.
 
 Supports Claude Code, Codex CLI, Gemini CLI, and any ACP-compatible agents. Automatically detects agents from AutoDev/Xiuper configurations.
