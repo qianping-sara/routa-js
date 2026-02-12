@@ -968,7 +968,9 @@ class DispatcherPanel(
             }
 
             is OrchestratorPhase.Planning -> {
-                clearAllPanels()
+                // Don't clear all panels during planning - only clear old CRAFTER panels
+                // Keep ROUTA panel history to maintain conversation context
+                clearCrafterPanels()
             }
 
             is OrchestratorPhase.PlanReady -> {
@@ -1033,7 +1035,8 @@ class DispatcherPanel(
             return
         }
 
-        clearAllPanels()
+        // Don't clear panels here - only clear when user explicitly clicks "New Session"
+        // This allows conversation to continue in the same session
 
         scope.launch {
             try {
@@ -1085,6 +1088,32 @@ class DispatcherPanel(
         }
 
         // Reset sidebar (keeps ROUTA and GATE, removes CRAFTERs)
+        sidebar.clear()
+
+        rendererCardPanel.revalidate()
+        rendererCardPanel.repaint()
+    }
+
+    /**
+     * Clear only CRAFTER panels, keeping ROUTA and GATE history intact.
+     * Used during Planning phase to prepare for new tasks while maintaining conversation context.
+     */
+    private fun clearCrafterPanels() {
+        // Clear GATE panel for new verification
+        gatePanel.clear()
+
+        // Remove dynamic CRAFTER panels only
+        val crafterIds = agentPanels.keys.filter {
+            it != routaPanel.agentId && it != gatePanel.agentId
+        }
+        for (id in crafterIds) {
+            agentPanels[id]?.let { panel ->
+                rendererCardPanel.remove(panel.rendererScroll)
+            }
+            agentPanels.remove(id)
+        }
+
+        // Update sidebar to remove CRAFTERs but keep ROUTA/GATE
         sidebar.clear()
 
         rendererCardPanel.revalidate()
