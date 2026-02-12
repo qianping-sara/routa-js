@@ -13,7 +13,7 @@ import java.util.UUID
  * - Each `@@@task` block contains one task (first `# ` heading is title, rest is content)
  * - Extracts structured sections (Objective, Scope, etc.) from the content
  *
- * The `@@@task` block format:
+ * The `@@@task` block format (with optional markdown heading prefix):
  * ```
  * @@@task
  * # Task Title
@@ -31,6 +31,14 @@ import java.util.UUID
  *
  * ## Verification
  * - ./gradlew test
+ * @@@
+ * ```
+ *
+ * Also supports markdown heading prefix (e.g., `### @@@task`):
+ * ```
+ * ### @@@task
+ * # Task Title
+ * ...
  * @@@
  * ```
  */
@@ -65,6 +73,7 @@ object TaskParser {
      * This approach correctly handles:
      * - Nested code blocks (```bash ... ```) inside task blocks
      * - Both `@@@task` and `@@@tasks` syntax
+     * - Optional markdown heading prefix (e.g., `### @@@task`)
      * - Various line ending styles (\n, \r\n)
      */
     private fun extractTaskBlocks(content: String): List<String> {
@@ -78,7 +87,8 @@ object TaskParser {
         for (line in lines) {
             if (!inTaskBlock) {
                 // Check for task block start: @@@task or @@@tasks
-                if (line.trim().matches(Regex("""@@@tasks?\s*"""))) {
+                // Also supports optional markdown heading prefix: ### @@@task
+                if (line.trim().matches(Regex("""#{0,6}\s*@@@tasks?\s*"""))) {
                     inTaskBlock = true
                     inNestedCodeBlock = false
                     taskBlockLines.clear()

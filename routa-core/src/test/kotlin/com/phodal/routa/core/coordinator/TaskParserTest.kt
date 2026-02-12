@@ -899,4 +899,102 @@ Just some content without any headers.
         assertEquals(5, tasks[0].acceptanceCriteria.size)
         assertEquals(4, tasks[0].verificationCommands.size)
     }
+
+    // ── Markdown heading prefix support ────────────────────────────────
+
+    @Test
+    fun `parse task with markdown heading prefix - triple hash`() {
+        val text = """
+### @@@task
+# Task 2: Create Session Lifecycle Sequence Diagram
+
+## Objective
+Create a sequence diagram showing the complete session lifecycle from initialization through prompt turns to completion.
+
+## Scope
+- Create new diagram: docs/images/session-lifecycle.d2 (and corresponding .svg)
+- Include all phases:
+  - Initialization Phase (initialize, optional authenticate)
+  - Session Setup Phase (session/new or session/load)
+  - Prompt Turn Phase (session/prompt, session/update notifications, session/cancel option)
+  - Tool Calls & Permissions (session/request_permission flow)
+- Show bidirectional JSON-RPC communication
+- Include MCP server connections during session setup
+
+## Definition of Done
+- New D2 source file created at docs/images/session-lifecycle.d2
+- Rendered SVG output at docs/images/session-lifecycle.svg
+- Sequence shows proper message ordering
+- Error handling and cancellation flows are indicated
+- All three phases (init, session, prompt) clearly labeled
+
+## Verification
+- Review D2 file for syntax correctness
+- Confirm SVG renders properly in browser
+- report_to_parent: Session lifecycle diagram created showing X phases with Y message types
+@@@
+        """.trimIndent()
+
+        val tasks = TaskParser.parse(text, workspace)
+
+        assertEquals(1, tasks.size)
+        assertEquals("Task 2: Create Session Lifecycle Sequence Diagram", tasks[0].title)
+        assertTrue(tasks[0].objective.contains("sequence diagram"))
+        assertTrue(tasks[0].scope.any { it.contains("docs/images/session-lifecycle.d2") })
+        assertTrue(tasks[0].acceptanceCriteria.any { it.contains("D2 source file") })
+        assertTrue(tasks[0].verificationCommands.any { it.contains("D2 file for syntax") })
+    }
+
+    @Test
+    fun `parse task with various markdown heading prefixes`() {
+        val text = """
+# @@@task
+# Single Hash Task
+
+## Objective
+Test single hash
+
+## Scope
+- file1.kt
+@@@
+
+## @@@task
+# Double Hash Task
+
+## Objective
+Test double hash
+@@@
+
+#### @@@task
+# Quad Hash Task
+
+## Objective
+Test quad hash
+@@@
+        """.trimIndent()
+
+        val tasks = TaskParser.parse(text, workspace)
+
+        assertEquals(3, tasks.size)
+        assertEquals("Single Hash Task", tasks[0].title)
+        assertEquals("Double Hash Task", tasks[1].title)
+        assertEquals("Quad Hash Task", tasks[2].title)
+    }
+
+    @Test
+    fun `parse task with heading prefix and extra whitespace`() {
+        val text = """
+###   @@@task
+# Task with Whitespace
+
+## Objective
+Test whitespace handling
+@@@
+        """.trimIndent()
+
+        val tasks = TaskParser.parse(text, workspace)
+
+        assertEquals(1, tasks.size)
+        assertEquals("Task with Whitespace", tasks[0].title)
+    }
 }
