@@ -1,9 +1,9 @@
-# Agent Dispatcher for IntelliJ IDEA
+# Routa for IntelliJ IDEA
 
 <!-- Plugin description -->
 Manage multiple ACP (Agent Client Protocol) compatible coding agents directly from your IDE.
 
-Agent Dispatcher provides multi-agent session management, real-time streaming chat interface, tool call visualization, and efficient process lifecycle management.
+Routa provides multi-agent session management, real-time streaming chat interface, tool call visualization, and efficient process lifecycle management.
 
 Supports Claude Code, Codex CLI, Gemini CLI, and any ACP-compatible agents. Automatically detects agents from AutoDev/Xiuper configurations.
 <!-- Plugin description end -->
@@ -34,9 +34,9 @@ Any ACP-compatible agent, including:
    - Download from JetBrains Marketplace (coming soon) or build from source
    - Install via Settings → Plugins → Install from Disk
 
-2. **Open Agent Dispatcher** tool window
+2. **Open Routa** tool window
    - Find it in the right sidebar
-   - Or: View → Tool Windows → Agent Dispatcher
+   - Or: View → Tool Windows → Routa
 
 3. **Start chatting immediately!**
    - The Welcome page shows detected agents and an input area
@@ -50,7 +50,7 @@ Any ACP-compatible agent, including:
 
 ## Configuration
 
-Agent Dispatcher uses a smart 3-tier configuration system with automatic agent detection:
+Routa uses a smart 3-tier configuration system with automatic agent detection:
 
 ### Configuration Priority
 
@@ -64,7 +64,7 @@ Lowest:  System PATH (auto-detected CLI tools - only for missing agents)
 
 ### 1. Automatic Detection from AutoDev/Xiuper
 
-If you already use [AutoDev](https://github.com/unit-mesh/auto-dev) or [Xiuper](https://github.com/unit-mesh/xiuper), Agent Dispatcher will **automatically use** your existing agent configurations from `~/.autodev/config.yaml`:
+If you already use [AutoDev](https://github.com/unit-mesh/auto-dev) or [Xiuper](https://github.com/unit-mesh/xiuper), Routa will **automatically use** your existing agent configurations from `~/.autodev/config.yaml`:
 
 ```yaml
 # ~/.autodev/config.yaml (your existing config)
@@ -91,7 +91,7 @@ activeAcpAgent: kimi
 
 ### 2. Auto-Detection for Missing Agents
 
-For agents **NOT** in your AutoDev config, Agent Dispatcher will automatically detect them from your system PATH:
+For agents **NOT** in your AutoDev config, Routa will automatically detect them from your system PATH:
 
 - Checks common ACP CLI tools: `codex`, `gemini`, `copilot`, `auggie`, etc.
 - Uses `which` (Unix/macOS) or `where` (Windows) to find full paths
@@ -146,7 +146,7 @@ agents:
 
 ### Quick Start
 
-1. Open the **Agent Dispatcher** tool window (View → Tool Windows → Agent Dispatcher)
+1. Open the **Routa** tool window (View → Tool Windows → Routa)
 2. Click **+ Add Agent** to create an agent configuration, or manually edit `~/.agent-dispatcher/config.yaml`
 3. Select an agent from the dropdown
 4. Click **Connect**
