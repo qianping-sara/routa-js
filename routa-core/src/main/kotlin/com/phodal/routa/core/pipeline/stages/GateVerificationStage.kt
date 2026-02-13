@@ -7,6 +7,7 @@ import com.phodal.routa.core.model.TaskStatus
 import com.phodal.routa.core.model.VerificationVerdict
 import com.phodal.routa.core.pipeline.PipelineContext
 import com.phodal.routa.core.pipeline.PipelineStage
+import com.phodal.routa.core.pipeline.RetryPolicy
 import com.phodal.routa.core.pipeline.StageResult
 import com.phodal.routa.core.runner.OrchestratorPhase
 import com.phodal.routa.core.runner.OrchestratorResult
@@ -36,7 +37,20 @@ class GateVerificationStage : PipelineStage {
     override val name = "gate-verification"
     override val description = "GATE verifies completed work against acceptance criteria"
 
+    /**
+     * Retry policy for GATE verification.
+     *
+     * Verification LLM calls can fail due to network issues.
+     * We retry up to 2 times with exponential backoff.
+     */
+    override val retryPolicy = RetryPolicy(
+        maxAttempts = 2,
+        baseDelayMs = 2000,
+        backoffMultiplier = 2.0,
+    )
+
     override suspend fun execute(context: PipelineContext): StageResult {
+        context.ensureActive() // ← cancellation check before verification
         context.emitPhase(OrchestratorPhase.VerificationStarting(context.waveNumber))
 
         val gateAgentId = context.system.coordinator.startVerification()

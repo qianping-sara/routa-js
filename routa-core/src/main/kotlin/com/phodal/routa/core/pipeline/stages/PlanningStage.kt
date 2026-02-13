@@ -38,6 +38,8 @@ class PlanningStage : PipelineStage {
         // Build the planning prompt
         val planPrompt = buildPlanPrompt(context.userRequest)
 
+        context.ensureActive() // ← cancellation check before LLM call
+
         // Execute ROUTA via streaming provider
         val planOutput = context.provider.runStreaming(
             AgentRole.ROUTA, routaAgentId, planPrompt

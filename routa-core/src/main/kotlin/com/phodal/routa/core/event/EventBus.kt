@@ -1,8 +1,11 @@
 package com.phodal.routa.core.event
 
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.Instant
@@ -143,6 +146,50 @@ class EventBus(
      */
     suspend fun clearLog() {
         logMutex.withLock { eventLog.clear() }
+    }
+
+    // ── Typed Subscription API (collaboration plane) ────────────────
+
+    /**
+     * Subscribe to a specific type of [AgentEvent].
+     *
+     * Returns a [Flow] that only emits events matching the reified type [T].
+     * This is the primary subscription API for the collaboration plane.
+     *
+     * ## Usage
+     * ```kotlin
+     * // Subscribe to all task delegations
+     * eventBus.subscribeTo<AgentEvent.TaskDelegated>()
+     *     .collect { event ->
+     *         println("Task ${event.taskId} delegated to ${event.agentId}")
+     *     }
+     *
+     * // Subscribe to agent completions with filter
+     * eventBus.subscribeTo<AgentEvent.AgentCompleted>()
+     *     .filter { it.report.success }
+     *     .collect { event ->
+     *         println("Agent ${event.agentId} succeeded")
+     *     }
+     * ```
+     */
+    inline fun <reified T : AgentEvent> subscribeTo(): Flow<T> {
+        return events.filterIsInstance<T>()
+    }
+
+    /**
+     * Subscribe to events matching a predicate.
+     *
+     * More flexible than [subscribeTo] — allows runtime filtering
+     * without reification.
+     *
+     * ```kotlin
+     * eventBus.subscribeWhere { event ->
+     *     event is AgentEvent.TaskStatusChanged && event.newStatus == TaskStatus.COMPLETED
+     * }.collect { ... }
+     * ```
+     */
+    fun subscribeWhere(predicate: (AgentEvent) -> Boolean): Flow<AgentEvent> {
+        return events.filter(predicate)
     }
 }
 

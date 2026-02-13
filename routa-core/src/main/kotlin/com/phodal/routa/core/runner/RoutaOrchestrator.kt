@@ -3,11 +3,14 @@ package com.phodal.routa.core.runner
 import com.phodal.routa.core.RoutaSystem
 import com.phodal.routa.core.pipeline.OrchestrationPipeline
 import com.phodal.routa.core.pipeline.PipelineContext
+import com.phodal.routa.core.pipeline.PipelineEventBridge
 import com.phodal.routa.core.provider.AgentProvider
 import com.phodal.routa.core.provider.AgentRunnerAdapter
 import com.phodal.routa.core.provider.StreamChunk
 import com.phodal.routa.core.report.ReportParser
 import com.phodal.routa.core.report.TextPatternReportParser
+import kotlinx.coroutines.Job
+import kotlin.coroutines.coroutineContext
 
 /**
  * The multi-agent orchestration entry point.
@@ -93,9 +96,23 @@ class RoutaOrchestrator(
         reportParser ?: TextPatternReportParser()
 
     /**
+     * The pipeline event bridge — exposes pipeline lifecycle events for
+     * the collaboration plane (UI, metrics, recovery handlers).
+     *
+     * ```kotlin
+     * orchestrator.eventBridge.subscribeTo<PipelineEvent.StageCompleted>()
+     *     .collect { event -> logger.info("Stage ${event.stageName} took ${event.durationMs}ms") }
+     * ```
+     */
+    val eventBridge: PipelineEventBridge
+        get() = resolvedPipeline.eventBridge
+
+    /**
      * Execute the full multi-agent orchestration flow.
      *
      * Creates a [PipelineContext] and delegates execution to the [OrchestrationPipeline].
+     * The current coroutine's [Job] is passed to the context for cancellation propagation —
+     * when the caller's scope is cancelled, the pipeline exits cooperatively.
      *
      * @param userRequest The user's requirement/task description.
      * @return The orchestration result.
@@ -110,6 +127,7 @@ class RoutaOrchestrator(
             parallelCrafters = parallelCrafters,
             onPhaseChange = onPhaseChange,
             onStreamChunk = onStreamChunk,
+            parentJob = coroutineContext[Job],
         )
 
         return resolvedPipeline.execute(context)

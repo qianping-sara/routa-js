@@ -6,6 +6,7 @@ import com.phodal.routa.core.model.AgentStatus
 import com.phodal.routa.core.model.CompletionReport
 import com.phodal.routa.core.pipeline.PipelineContext
 import com.phodal.routa.core.pipeline.PipelineStage
+import com.phodal.routa.core.pipeline.RetryPolicy
 import com.phodal.routa.core.pipeline.StageResult
 import com.phodal.routa.core.runner.OrchestratorPhase
 import com.phodal.routa.core.runner.OrchestratorResult
@@ -35,6 +36,18 @@ class CrafterExecutionStage : PipelineStage {
 
     override val name = "crafter-execution"
     override val description = "Executes ready tasks with CRAFTER agents"
+
+    /**
+     * Retry policy for CRAFTER execution.
+     *
+     * LLM calls can fail due to network issues or rate limits.
+     * We retry up to 2 times with exponential backoff (2s → 4s).
+     */
+    override val retryPolicy = RetryPolicy(
+        maxAttempts = 2,
+        baseDelayMs = 2000,
+        backoffMultiplier = 2.0,
+    )
 
     override suspend fun execute(context: PipelineContext): StageResult {
         context.waveNumber = context.waveNumber + 1
@@ -83,6 +96,7 @@ class CrafterExecutionStage : PipelineStage {
         crafterId: String,
         taskId: String,
     ) {
+        context.ensureActive() // ← cancellation check before each CRAFTER
         context.emitPhase(OrchestratorPhase.CrafterRunning(crafterId, taskId))
 
         val taskContext = context.system.coordinator.buildAgentContext(crafterId)

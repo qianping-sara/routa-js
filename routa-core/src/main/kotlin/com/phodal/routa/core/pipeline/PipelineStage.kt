@@ -45,13 +45,25 @@ interface PipelineStage {
     val description: String
 
     /**
+     * Optional retry policy for this stage.
+     *
+     * When non-null, the [OrchestrationPipeline] retries the stage on
+     * retryable exceptions according to this policy before propagating failure.
+     * When null, the stage fails immediately on any unhandled exception.
+     *
+     * @see RetryPolicy for configuring retry behavior.
+     */
+    val retryPolicy: RetryPolicy? get() = null
+
+    /**
      * Execute this stage.
      *
      * Implementations should:
-     * 1. Read inputs from [context] (stores, metadata, configuration)
-     * 2. Perform the stage's work (calling providers, updating stores, etc.)
-     * 3. Write outputs to [context] for downstream stages
-     * 4. Return a [StageResult] to control pipeline flow
+     * 1. Call [PipelineContext.ensureActive] before long-running operations
+     * 2. Read inputs from [context] (stores, metadata, configuration)
+     * 3. Perform the stage's work (calling providers, updating stores, etc.)
+     * 4. Write outputs to [context] for downstream stages
+     * 5. Return a [StageResult] to control pipeline flow
      *
      * @param context The shared pipeline context with stores, providers, and metadata.
      * @return A [StageResult] indicating what the pipeline should do next.

@@ -5,6 +5,9 @@ import com.phodal.routa.core.provider.AgentProvider
 import com.phodal.routa.core.provider.StreamChunk
 import com.phodal.routa.core.report.ReportParser
 import com.phodal.routa.core.runner.OrchestratorPhase
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.coroutineContext
 
 /**
  * Shared context flowing through all [PipelineStage]s in a pipeline execution.
@@ -23,6 +26,10 @@ import com.phodal.routa.core.runner.OrchestratorPhase
  *
  * 3. **ReportParser is pluggable**: Different report parsing strategies can
  *    be injected for different LLM output formats.
+ *
+ * 4. **Cancellation propagation**: A parent [Job] can be injected so stages
+ *    can check [ensureActive] before long-running operations. When the user
+ *    stops execution, the Job is cancelled and stages exit cooperatively.
  *
  * ## Well-Known Metadata Keys
  *
@@ -57,6 +64,17 @@ class PipelineContext(
 
     /** Callback invoked when an agent produces a streaming chunk. */
     val onStreamChunk: ((agentId: String, chunk: StreamChunk) -> Unit)? = null,
+
+    /**
+     * Parent coroutine Job for cancellation propagation.
+     *
+     * When the user stops the pipeline (e.g., via UI "Cancel" button),
+     * the parent Job is cancelled. Stages that call [ensureActive] will
+     * throw [CancellationException] and the pipeline exits cooperatively.
+     *
+     * If null, the pipeline uses the caller's coroutine context Job.
+     */
+    val parentJob: Job? = null,
 ) {
 
     /**
@@ -101,6 +119,19 @@ class PipelineContext(
         set(value) { metadata[KEY_DELEGATIONS] = value }
 
     // ── Helper methods ──────────────────────────────────────────────────
+
+    /**
+     * Check if the pipeline is still active.
+     *
+     * Stages should call this before long-running operations (LLM calls,
+     * network I/O) to support cooperative cancellation. Throws
+     * [kotlinx.coroutines.CancellationException] if the pipeline has been cancelled.
+     *
+     * Uses [parentJob] if provided, otherwise checks the caller's coroutine Job.
+     */
+    suspend fun ensureActive() {
+        parentJob?.ensureActive() ?: coroutineContext[Job]?.ensureActive()
+    }
 
     /** Emit a phase change event. */
     suspend fun emitPhase(phase: OrchestratorPhase) {
