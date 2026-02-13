@@ -95,11 +95,11 @@ class GateVerificationStage : PipelineStage {
                 StageResult.Done(buildSuccessResult(context))
             }
 
-            // Some tasks need fixes — reset and repeat
+            // Some tasks need fixes — reset and repeat from crafter-execution
             needsFixTasks.isNotEmpty() -> {
                 context.emitPhase(OrchestratorPhase.NeedsFix(context.waveNumber))
                 resetNeedsFixTasks(context)
-                StageResult.RepeatPipeline
+                StageResult.RepeatPipeline(fromStageName = "crafter-execution")
             }
 
             // Other states — continue (might have more pending tasks)

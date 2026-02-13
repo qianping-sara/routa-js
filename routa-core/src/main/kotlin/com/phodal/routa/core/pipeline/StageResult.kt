@@ -41,13 +41,19 @@ sealed class StageResult {
     data class SkipRemaining(val result: OrchestratorResult) : StageResult()
 
     /**
-     * Restart from the beginning of the pipeline (next iteration).
+     * Restart the pipeline from a specific stage (next iteration).
      *
      * Used when the Gate rejects work and tasks need to be re-executed.
      * The pipeline respects [OrchestrationPipeline.maxIterations] to prevent
      * infinite loops.
+     *
+     * @param fromStageName Optional: the name of the stage to restart from.
+     *   If null, resumes from the stage that emitted this result.
+     *   If set, resumes from the named stage (e.g., "crafter-execution").
+     *   This prevents one-shot stages (Planning, TaskRegistration) from
+     *   re-running on fix waves.
      */
-    data object RepeatPipeline : StageResult()
+    data class RepeatPipeline(val fromStageName: String? = null) : StageResult()
 
     /**
      * Terminate the pipeline with a final result.

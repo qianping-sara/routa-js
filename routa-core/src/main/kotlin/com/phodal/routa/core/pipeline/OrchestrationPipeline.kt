@@ -92,6 +92,9 @@ class OrchestrationPipeline(
         var lastCompletedStage: String? = null
         var iterationsUsed = 0
 
+        // Track which stage triggered RepeatPipeline so we can resume from there
+        var repeatFromIndex = 0
+
         eventBridge.tryEmit(
             PipelineEvent.PipelineStarted(pipelineId, stages.size, maxIterations)
         )
@@ -109,7 +112,12 @@ class OrchestrationPipeline(
 
                 var shouldRepeat = false
 
-                for (stage in stages) {
+                // On iteration > 1, skip stages before the repeat point
+                // (Planning + TaskRegistration should NOT re-run on fix waves)
+                val startIndex = if (iteration > 1) repeatFromIndex else 0
+                val activeStages = stages.subList(startIndex, stages.size)
+
+                for (stage in activeStages) {
                     context.ensureActive() // ← cancellation check point
 
                     val result = executeStageWithResilience(context, stage, iteration)
@@ -129,6 +137,17 @@ class OrchestrationPipeline(
                         is StageResult.RepeatPipeline -> {
                             lastCompletedStage = stage.name
                             shouldRepeat = true
+                            // Determine where to resume on the next iteration.
+                            // If the stage specified a fromStageName, find that stage's index.
+                            // Otherwise, resume from the stage that triggered RepeatPipeline.
+                            // This prevents one-shot stages (Planning, TaskRegistration)
+                            // from re-running on fix waves.
+                            repeatFromIndex = if (result.fromStageName != null) {
+                                stages.indexOfFirst { it.name == result.fromStageName }
+                                    .takeIf { it >= 0 } ?: 0
+                            } else {
+                                stages.indexOf(stage).coerceAtLeast(0)
+                            }
                             break
                         }
 

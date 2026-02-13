@@ -341,11 +341,140 @@ The chat interface shows different message types with distinct styling:
 
 ## Architecture
 
+### Two-Plane Architecture
+
+Routa's `routa-core` orchestration engine is built on a **two-plane architecture** that cleanly separates execution control from observability and recovery:
+
+```mermaid
+graph TB
+    subgraph CP["🎛️ Control Plane — Pipeline"]
+        direction TB
+        ORP["OrchestrationPipeline"]
+        PS["PipelineStage"]
+        RP["RetryPolicy"]
+        CS["ConditionalStage"]
+        SR["StageResult"]
+        CC["Cancellation<br/>(Job → ensureActive)"]
+
+        ORP --> PS
+        PS --> RP
+        PS --> SR
+        ORP --> CS
+        ORP --> CC
+    end
+
+    subgraph COLL["📡 Collaboration Plane — Event + Subscription + Recovery"]
+        direction TB
+        PEB["PipelineEventBridge"]
+        PE["PipelineEvent<br/>(StageStarted, StageCompleted,<br/>StageFailed, PipelineCancelled...)"]
+        SRH["StageRecoveryHandler<br/>(Skip / Fallback / Abort)"]
+        EB["EventBus<br/>(subscribeTo&lt;T&gt;, replaySince)"]
+        AE["AgentEvent<br/>(AgentCompleted, TaskDelegated,<br/>TaskStatusChanged...)"]
+
+        PEB --> PE
+        PEB --> SRH
+        EB --> AE
+    end
+
+    subgraph STAGES["🔧 Pipeline Stages"]
+        direction LR
+        S1["1. PlanningStage"]
+        S2["2. TaskRegistrationStage"]
+        S3["3. CrafterExecutionStage"]
+        S4["4. GateVerificationStage"]
+        S1 --> S2 --> S3 --> S4
+        S4 -.->|"RepeatPipeline<br/>(fix wave)"| S3
+    end
+
+    ORP --> STAGES
+    STAGES --> PEB
+    PEB --> EB
+
+    style CP fill:#e6f3ff,stroke:#4a9eff,stroke-width:2px
+    style COLL fill:#f0fce6,stroke:#52c41a,stroke-width:2px
+    style STAGES fill:#fff7e6,stroke:#fa8c16,stroke-width:2px
+```
+
+#### Control Plane (Pipeline)
+
+The control plane owns **stage execution order, retry, cancellation, and iteration control**:
+
+| Component | Description |
+|-----------|-------------|
+| `OrchestrationPipeline` | Executes stages in sequence, handles RepeatPipeline (fix waves skip Planning/TaskRegistration) |
+| `PipelineStage` | Interface for composable stages with optional `retryPolicy` |
+| `RetryPolicy` | Per-stage retry with exponential backoff (e.g., CrafterExecution retries 2× on network errors) |
+| `ConditionalStage` | Decorator that skips a stage at runtime based on a `condition(context)` predicate |
+| `PipelineContext` | Shared state + `ensureActive()` for cooperative cancellation via coroutine Job |
+| `StageResult` | Sealed class: `Continue`, `SkipRemaining`, `RepeatPipeline(fromStage)`, `Done`, `Failed` |
+
+#### Collaboration Plane (Event + Subscription + Recovery)
+
+The collaboration plane provides **observability, error recovery, and cross-cutting concerns**:
+
+| Component | Description |
+|-----------|-------------|
+| `PipelineEventBridge` | Emits `PipelineEvent`s (StageStarted/Completed/Failed/Skipped, PipelineCancelled) with typed subscription API |
+| `StageRecoveryHandler` | Maps exceptions to recovery actions after retries: `Skip` (continue), `Fallback` (substitute result), `Abort` (fail) |
+| `EventBus` | System-wide agent events with `subscribeTo<T>()`, `subscribeWhere {}`, replay, and bounded critical event log |
+| `AgentEvent` | Agent lifecycle events (AgentCompleted, TaskDelegated, TaskStatusChanged) for coordination |
+
+#### Pipeline Execution Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Orch as RoutaOrchestrator
+    participant Pipe as OrchestrationPipeline
+    participant Plan as PlanningStage
+    participant Reg as TaskRegistrationStage
+    participant Craft as CrafterExecutionStage
+    participant Gate as GateVerificationStage
+    participant Bridge as PipelineEventBridge
+
+    User->>Orch: execute(request)
+    Orch->>Pipe: execute(context)
+    
+    Note over Pipe: Iteration 1
+    Pipe->>Bridge: PipelineStarted
+    
+    Pipe->>Plan: execute(context)
+    Bridge-->>Bridge: StageStarted("planning")
+    Plan-->>Pipe: Continue
+    Bridge-->>Bridge: StageCompleted("planning")
+    
+    Pipe->>Reg: execute(context)
+    Reg-->>Pipe: Continue (2 tasks registered)
+    
+    Pipe->>Craft: execute(context)
+    Note over Craft: ensureActive() ← cancellation check
+    Note over Craft: retryPolicy: 2 attempts, 2s backoff
+    Craft-->>Pipe: Continue
+    
+    Pipe->>Gate: execute(context)
+    Gate-->>Pipe: RepeatPipeline(from="crafter-execution")
+    Bridge-->>Bridge: StageCompleted("gate-verification")
+    
+    Note over Pipe: Iteration 2 (skips Planning + TaskRegistration)
+    Bridge-->>Bridge: IterationStarted(2)
+    
+    Pipe->>Craft: execute(context)
+    Craft-->>Pipe: Continue
+    
+    Pipe->>Gate: execute(context)
+    Gate-->>Pipe: Done(Success)
+    Bridge-->>Bridge: PipelineCompleted(success=true)
+    
+    Pipe-->>Orch: OrchestratorResult.Success
+    Orch-->>User: Result
+```
+
 ### Core Components
 
 #### Multi-Agent Pipeline
 
-- **RoutaOrchestrator** - Coordinates the full ROUTA → CRAFTER → GATE workflow
+- **RoutaOrchestrator** - Thin facade: creates `PipelineContext` and delegates to `OrchestrationPipeline`
+- **OrchestrationPipeline** - Control plane executor with retry, cancellation, recovery, and event emission
 - **RoutaCoordinator** - Manages task distribution, agent status, and inter-agent communication
 - **AgentProvider** - Abstract interface for running agents with health checks and streaming
 - **CapabilityBasedRouter** - Dynamically routes tasks to the most suitable agent based on capabilities
@@ -488,13 +617,35 @@ routa/
 │           └── DispatcherPanel.kt
 ├── routa-core/                 # Platform-agnostic orchestration core
 │   └── src/main/kotlin/com/phodal/routa/core/
-│       ├── runner/             # Orchestration engine
-│       │   └── RoutaOrchestrator.kt
+│       ├── pipeline/           # 🎛️ Control Plane
+│       │   ├── OrchestrationPipeline.kt   # Stage executor with retry/cancel/recovery
+│       │   ├── PipelineStage.kt           # Composable stage interface
+│       │   ├── PipelineContext.kt          # Shared state + cancellation (Job)
+│       │   ├── StageResult.kt             # Continue/Done/RepeatPipeline/Failed
+│       │   ├── RetryPolicy.kt             # Per-stage retry with backoff
+│       │   ├── ConditionalStage.kt        # Runtime stage skip decorator
+│       │   ├── PipelineEvent.kt           # 📡 Lifecycle events
+│       │   ├── PipelineEventBridge.kt     # Event emission + typed subscriptions
+│       │   ├── StageRecoveryHandler.kt    # Post-retry recovery strategies
+│       │   └── stages/
+│       │       ├── PlanningStage.kt       # Stage 1: ROUTA plans tasks
+│       │       ├── TaskRegistrationStage.kt # Stage 2: Parse @@@task blocks
+│       │       ├── CrafterExecutionStage.kt # Stage 3: Run CRAFTERs
+│       │       └── GateVerificationStage.kt # Stage 4: GATE verifies
+│       ├── runner/             # Orchestration entry point
+│       │   └── RoutaOrchestrator.kt       # Thin facade → Pipeline
 │       ├── provider/           # Agent providers
 │       │   ├── AgentProvider.kt
 │       │   ├── AcpAgentProvider.kt
 │       │   ├── KoogAgentProvider.kt
+│       │   ├── ResilientAgentProvider.kt
 │       │   └── WorkspaceAgentProvider.kt
+│       ├── event/              # 📡 Collaboration Plane
+│       │   ├── EventBus.kt               # subscribeTo<T>, replay, bounded log
+│       │   └── AgentEvent.kt             # Agent lifecycle events
+│       ├── report/             # LLM output parsing
+│       │   ├── ReportParser.kt
+│       │   └── TextPatternReportParser.kt
 │       ├── coordinator/        # Task coordination
 │       │   └── RoutaCoordinator.kt
 │       ├── mcp/               # MCP server implementation
