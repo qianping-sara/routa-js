@@ -14,9 +14,10 @@
  * See acp-presets.ts for available presets.
  */
 
-import {type AcpAgentPreset, getPresetById, resolveCommand,} from "./acp-presets";
-import {AcpProcess} from "@/core/acp/acp-process";
-import {AcpProcessManager} from "@/core/acp/acp-process-manager";
+import { type AcpAgentPreset, getPresetById, resolveCommand } from "./acp-presets";
+import { which } from "./utils";
+import { AcpProcess } from "@/core/acp/acp-process";
+import { AcpProcessManager } from "@/core/acp/acp-process-manager";
 
 export type NotificationHandler = (msg: JsonRpcMessage) => void;
 
@@ -56,13 +57,15 @@ export interface AcpProcessConfig {
 
 /**
  * Build an AcpProcessConfig from a preset ID and working directory.
+ * Resolves the command via PATH (which) when not set by env override, so the
+ * server can find the binary even if it's not in the same PATH as the shell.
  */
-export function buildConfigFromPreset(
+export async function buildConfigFromPreset(
   presetId: string,
   cwd: string,
   extraArgs?: string[],
   extraEnv?: Record<string, string>
-): AcpProcessConfig {
+): Promise<AcpProcessConfig> {
   const preset = getPresetById(presetId);
   if (!preset) {
     throw new Error(
@@ -76,7 +79,13 @@ export function buildConfigFromPreset(
     );
   }
 
-  const command = resolveCommand(preset);
+  let command = resolveCommand(preset);
+  const isAbsolute = command.startsWith("/") || (process.platform === "win32" && /^[a-zA-Z]:[\\/]/.test(command));
+  if (!isAbsolute) {
+    const resolved = await which(command);
+    if (resolved) command = resolved;
+  }
+
   const args = [...preset.args];
 
   // Append --cwd if the preset uses positional cwd (like opencode)
@@ -102,7 +111,7 @@ export function buildConfigFromPreset(
 /**
  * Build a default config (opencode) for backward compatibility.
  */
-export function buildDefaultConfig(cwd: string): AcpProcessConfig {
+export async function buildDefaultConfig(cwd: string): Promise<AcpProcessConfig> {
   return buildConfigFromPreset("opencode", cwd);
 }
 
@@ -122,21 +131,18 @@ export interface ManagedProcess {
   createdAt: Date;
 }
 
-// ─── Backward-compatible alias ─────────────────────────────────────────
+// ─── Singleton Manager ─────────────────────────────────────────────────
 
-/**
- * @deprecated Use `AcpProcessManager` (via `getAcpProcessManager()`) instead.
- */
-const OpenCodeProcessManager = AcpProcessManager;
-
-// Singleton
-let singleton: AcpProcessManager | undefined;
+// Singleton instance - initialized lazily to avoid circular dependency
+let singleton: any | undefined;
 
 /**
  * Get the singleton AcpProcessManager instance.
  */
-export function getAcpProcessManager(): AcpProcessManager {
+export function getAcpProcessManager(): any {
   if (!singleton) {
+    // Import dynamically to avoid circular dependency
+    const { AcpProcessManager } = require('./acp-process-manager');
     singleton = new AcpProcessManager();
   }
   return singleton;

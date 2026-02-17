@@ -77,12 +77,53 @@ Configure your MCP client (Claude Code, etc.) to connect to:
 http://localhost:3000/api/mcp
 ```
 
+**Where is MCP configured?**
+
+- **In this project**: There is no MCP config file in the repo. The app exposes an MCP server at `/api/mcp`; any client that wants to use Routa’s coordination tools must point to that URL.
+- **Claude Code**: When you choose the "Claude Code" provider in the UI, Routa automatically injects the routa-mcp server into Claude Code via `--mcp-config`. No extra config in Claude Code is needed.
+- **OpenCode**: Routa only spawns OpenCode (e.g. `opencode acp --cwd <cwd>`) and does **not** pass MCP config into it. To let OpenCode use Routa’s MCP tools, add a **remote** MCP server in OpenCode’s config.
+
+Example OpenCode config (e.g. `~/.config/opencode/opencode.json` or project `.opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "routa": {
+      "type": "remote",
+      "url": "http://localhost:3000/api/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+Use the port your app runs on (e.g. `3005` if you started with `PORT=3005`). Then in OpenCode you can use the Routa coordination tools (e.g. list agents, delegate tasks).
+
 ### ACP Client Connection
 
 OpenCode or other ACP clients can connect to:
 ```
 http://localhost:3000/api/acp
 ```
+
+### Connect to remote OpenCode (e.g. cloud deployment)
+
+You can use a **remote** OpenCode instance (e.g. deployed at `https://opencode-nine.vercel.app`) instead of spawning a local `opencode` process.
+
+1. **Set the remote ACP URL** (one of):
+   - **Env (recommended)**: `OPENCODE_REMOTE_URL=https://opencode-nine.vercel.app/api/acp`  
+     (Use the real path where your deployment exposes ACP; see below.)
+   - **Per request**: when creating a session with provider `opencode-remote`, you can pass `remoteBaseUrl` in the `session/new` params (e.g. from the frontend).
+
+2. **In the UI**: choose provider **"OpenCode (Remote)"** and create a new session. The backend will talk to the URL from `OPENCODE_REMOTE_URL` (or the passed `remoteBaseUrl`).
+
+**Important:** The remote must expose the **same ACP-over-HTTP** contract as this app’s `/api/acp`:
+
+- **POST** to the base URL: JSON-RPC body with methods `initialize`, `session/new`, `session/prompt`, `session/cancel`.
+- **GET** `baseUrl?sessionId=<id>`: SSE stream of `session/update` events.
+
+If your deployment is the standard OpenCode **web** or **server** (REST API with `/session`, `/session/:id/message`, etc.), it does **not** speak ACP over HTTP by default. You would need an adapter or a proxy that translates ACP JSON-RPC/SSE to that REST API. This project only supports remotes that already expose an ACP-compatible HTTP/SSE endpoint.
 
 ## Project Structure
 

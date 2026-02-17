@@ -17,11 +17,12 @@ export enum AgentEventType {
 }
 
 export interface AgentEvent {
-  type: AgentEventType;
+  type: "agent_completed" | "agent_error" | "agent_created" | "task_assigned" | "task_completed";
   agentId: string;
-  workspaceId: string;
-  data: Record<string, unknown>;
-  timestamp: Date;
+  workspaceId?: string;
+  error?: string;
+  data?: Record<string, unknown>;
+  timestamp?: Date;
 }
 
 export interface EventSubscription {
@@ -32,7 +33,7 @@ export interface EventSubscription {
   excludeSelf: boolean;
 }
 
-type EventHandler = (event: AgentEvent) => void;
+type EventHandler = (event: AgentEvent) => void | Promise<void>;
 
 export class EventBus {
   private handlers = new Map<string, EventHandler>();
@@ -40,7 +41,17 @@ export class EventBus {
   private pendingEvents = new Map<string, AgentEvent[]>();
 
   /**
-   * Subscribe to events with a handler function
+   * Subscribe to events with a handler function (simple API)
+   * @returns Unsubscribe function
+   */
+  subscribe(handler: EventHandler): () => void {
+    const key = `handler-${Date.now()}-${Math.random()}`;
+    this.handlers.set(key, handler);
+    return () => this.handlers.delete(key);
+  }
+
+  /**
+   * Subscribe to events with a handler function (legacy API)
    */
   on(key: string, handler: EventHandler): void {
     this.handlers.set(key, handler);
@@ -60,7 +71,13 @@ export class EventBus {
     // Deliver to direct handlers
     for (const handler of this.handlers.values()) {
       try {
-        handler(event);
+        const result = handler(event);
+        // Handle async handlers
+        if (result instanceof Promise) {
+          result.catch((err) => {
+            console.error("[EventBus] Async handler error:", err);
+          });
+        }
       } catch (err) {
         console.error("[EventBus] Handler error:", err);
       }

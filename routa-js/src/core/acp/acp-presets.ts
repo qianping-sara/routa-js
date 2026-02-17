@@ -29,6 +29,12 @@ export interface AcpAgentPreset {
    * Non-standard providers are excluded from the standard AcpProcess flow.
    */
   nonStandardApi?: boolean;
+  /**
+   * If true, this preset connects to a remote ACP endpoint over HTTP instead of spawning a process.
+   * baseUrlEnv is the env var name for the remote base URL (e.g. OPENCODE_REMOTE_URL).
+   */
+  isRemote?: boolean;
+  baseUrlEnv?: string;
 }
 
 /**
@@ -83,6 +89,16 @@ export const ACP_AGENT_PRESETS: readonly AcpAgentPreset[] = [
     description: "Moonshot AI's Kimi CLI",
     envBinOverride: "KIMI_BIN",
   },
+  // Remote OpenCode (or any ACP-over-HTTP endpoint). No local spawn; baseUrl from env.
+  {
+    id: "opencode-remote",
+    name: "OpenCode (Remote)",
+    command: "",
+    args: [],
+    description: "OpenCode or ACP-compatible agent at a remote URL",
+    isRemote: true,
+    baseUrlEnv: "OPENCODE_REMOTE_URL",
+  },
   // Claude Code uses a non-standard API and requires separate handling
   {
     id: "claude",
@@ -110,6 +126,7 @@ export function getDefaultPreset(): AcpAgentPreset {
 
 /**
  * Get all standard ACP presets (excluding non-standard ones like Claude Code).
+ * Includes remote presets (opencode-remote) for UI display.
  */
 export function getStandardPresets(): AcpAgentPreset[] {
   return ACP_AGENT_PRESETS.filter((p) => !p.nonStandardApi);
@@ -132,7 +149,7 @@ export function resolveCommand(preset: AcpAgentPreset): string {
  * Only checks standard ACP presets (non-standard ones like Claude are excluded).
  */
 export async function detectInstalledPresets(): Promise<AcpAgentPreset[]> {
-  const standardPresets = getStandardPresets();
+  const standardPresets = getStandardPresets().filter((p) => !p.isRemote);
   const results: AcpAgentPreset[] = [];
 
   for (const preset of standardPresets) {

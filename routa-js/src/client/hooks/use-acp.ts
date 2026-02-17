@@ -32,7 +32,8 @@ export interface UseAcpActions {
   connect: () => Promise<void>;
   createSession: (
     cwd?: string,
-    provider?: string
+    provider?: string,
+    remoteBaseUrl?: string
   ) => Promise<AcpNewSessionResult | null>;
   selectSession: (sessionId: string) => void;
   setProvider: (provider: string) => void;
@@ -99,7 +100,8 @@ export function useAcp(baseUrl: string = ""): UseAcpState & UseAcpActions {
   const createSession = useCallback(
     async (
       cwd?: string,
-      provider?: string
+      provider?: string,
+      remoteBaseUrl?: string
     ): Promise<AcpNewSessionResult | null> => {
       const client = clientRef.current;
       if (!client) return null;
@@ -110,6 +112,7 @@ export function useAcp(baseUrl: string = ""): UseAcpState & UseAcpActions {
           cwd,
           provider: activeProvider,
           mcpServers: [],
+          ...(activeProvider === "opencode-remote" && remoteBaseUrl && { remoteBaseUrl }),
         });
         sessionIdRef.current = result.sessionId;
         setState((s) => ({

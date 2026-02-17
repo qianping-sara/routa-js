@@ -510,7 +510,7 @@ function ThoughtBubble({ content }: { content: string }) {
     <div className="flex justify-start">
       <div className="max-w-[90%] w-full">
         <button type="button" onClick={() => setExpanded((e) => !e)} className="w-full text-left group">
-          <div className="flex items-center gap-1.5 mb-0.5">
+          <div className="flex items-center gap-1.5 px-3 py-2 rounded-t-lg bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-800/50">
             <svg
               className={`w-3 h-3 text-purple-400 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
               fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
@@ -521,13 +521,11 @@ function ThoughtBubble({ content }: { content: string }) {
               Thinking
             </span>
           </div>
-          <div
-            className={`px-3 py-2 rounded-lg bg-purple-50 dark:bg-purple-900/10 border border-purple-100 dark:border-purple-800/50 text-xs text-purple-700 dark:text-purple-300 whitespace-pre-wrap transition-all duration-150 ${
-              expanded ? "max-h-60 overflow-y-auto" : "max-h-[2.8em] overflow-hidden"
-            }`}
-          >
-            {content}
-          </div>
+          {expanded && (
+            <div className="px-3 py-2 rounded-b-lg bg-purple-50 dark:bg-purple-900/10 border border-t-0 border-purple-100 dark:border-purple-800/50 text-xs text-purple-700 dark:text-purple-300 whitespace-pre-wrap max-h-60 overflow-y-auto">
+              {content}
+            </div>
+          )}
         </button>
       </div>
     </div>

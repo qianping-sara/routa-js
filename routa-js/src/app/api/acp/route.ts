@@ -130,7 +130,11 @@ export async function POST(request: NextRequest) {
           mcpConfigs,
         );
       } else {
-        // ── Standard ACP agent ───────────────────────────────────────
+        // ── Standard ACP agent or opencode-remote ─────────────────────
+        const remoteBaseUrl =
+          provider === "opencode-remote"
+            ? (p.remoteBaseUrl as string | undefined)
+            : undefined;
         acpSessionId = await manager.createSession(
           sessionId,
           cwd,
@@ -145,6 +149,9 @@ export async function POST(request: NextRequest) {
             }
           },
           provider,
+          undefined,
+          undefined,
+          remoteBaseUrl
         );
       }
 
@@ -295,9 +302,19 @@ export async function POST(request: NextRequest) {
       const claudePreset = getPresetById("claude");
       if (claudePreset) allPresets.push(claudePreset);
 
-      // Check which commands are installed in parallel
+      // Check which commands are installed (or remote URL for opencode-remote)
       const providers = await Promise.all(
         allPresets.map(async (p) => {
+          if (p.isRemote && p.baseUrlEnv) {
+            const url = process.env[p.baseUrlEnv]?.trim();
+            return {
+              id: p.id,
+              name: p.name,
+              description: p.description,
+              command: p.command,
+              status: url ? ("available" as const) : ("unavailable" as const),
+            };
+          }
           const cmd = resolveCommand(p);
           const resolved = await which(cmd);
           return {

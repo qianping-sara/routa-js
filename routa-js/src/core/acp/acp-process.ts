@@ -60,8 +60,12 @@ export class AcpProcess {
         });
 
         if (!this.process || !this.process.pid) {
+            const hint =
+                this._config.preset?.id === "opencode"
+                    ? ' Set OPENCODE_BIN to the full path of the opencode binary (e.g. from `which opencode`) if it is not in PATH.'
+                    : "";
             throw new Error(
-                `Failed to spawn ${displayName} - is "${command}" installed and in PATH?`
+                `Failed to spawn ${displayName} - is "${command}" installed and in PATH?${hint}`
             );
         }
 

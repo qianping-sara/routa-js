@@ -73,11 +73,14 @@ export class BrowserAcpClient {
     cwd?: string;
     provider?: string;
     mcpServers?: Array<{ name: string; url?: string }>;
+    /** For provider "opencode-remote": base URL of the remote ACP endpoint (e.g. https://opencode-nine.vercel.app/api/acp) */
+    remoteBaseUrl?: string;
   }): Promise<AcpNewSessionResult> {
     const result = await this.rpc<AcpNewSessionResult>("session/new", {
       cwd: params.cwd ?? "/",
       provider: params.provider ?? "opencode",
       mcpServers: params.mcpServers ?? [],
+      ...(params.remoteBaseUrl && { remoteBaseUrl: params.remoteBaseUrl }),
     });
     this._sessionId = result.sessionId;
 
