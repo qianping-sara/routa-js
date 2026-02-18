@@ -17,6 +17,7 @@ out
 # Production
 /build
 /dist
+.env
 
 # Misc
 .DS_Store
