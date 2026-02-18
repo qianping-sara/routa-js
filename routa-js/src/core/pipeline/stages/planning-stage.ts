@@ -8,19 +8,28 @@ import { AgentRole } from "../../models/agent";
 import { PipelineStage } from "../pipeline-stage";
 import { PipelineContext, emitPhase } from "../pipeline-context";
 import { StageResult } from "../stage-result";
+import { RouteDefinitions } from "../../role/route-definitions";
 
 /**
  * Stage 1: ROUTA Planning
  *
  * This stage:
  * 1. Initializes the coordinator (creates ROUTA agent)
- * 2. Builds the planning prompt
+ * 2. Builds the planning prompt (with optional enhanced ROUTA prompt injection)
  * 3. Executes ROUTA via the provider
  * 4. Stores the plan output in context
  */
 export class PlanningStage implements PipelineStage {
   name = "planning";
   description = "ROUTA analyzes the request and creates @@@task blocks";
+
+  /**
+   * Whether to inject the full ROUTA system prompt.
+   *
+   * When true (default): Injects RouteDefinitions.ROUTA.systemPrompt for ACP agents
+   * When false: Uses minimal prompt (assumes provider handles role definition)
+   */
+  useEnhancedPrompt: boolean = true;
 
   async execute(context: PipelineContext): Promise<StageResult> {
     await emitPhase(context, { type: "planning" });
@@ -68,8 +77,42 @@ export class PlanningStage implements PipelineStage {
     return StageResult.Continue();
   }
 
+  /**
+   * Build the planning prompt with optional enhanced ROUTA instructions.
+   *
+   * When useEnhancedPrompt is true, injects the full RouteDefinitions.ROUTA.systemPrompt
+   * to provide comprehensive role definition and behavioral rules.
+   *
+   * When false, uses a minimal prompt suitable for providers that handle role definition internally.
+   */
   private buildPlanPrompt(userRequest: string): string {
-    return `
+    if (this.useEnhancedPrompt) {
+      // Enhanced mode: Inject full ROUTA system prompt (like Kotlin ViewModel.buildRoutaEnhancedPrompt)
+      const routaSystemPrompt = RouteDefinitions.ROUTA.systemPrompt;
+      const routaRoleReminder = RouteDefinitions.ROUTA.roleReminder;
+
+      return `# ROUTA Coordinator Instructions
+
+${routaSystemPrompt}
+
+---
+
+**Role Reminder:** ${routaRoleReminder}
+
+---
+
+# User Request
+
+${userRequest}
+
+---
+
+Please analyze this request and break it down into @@@task blocks.
+Each task should have: Title, Objective, Scope, Definition of Done, and Verification commands.
+Use the @@@task ... @@@ format as specified in your instructions.`.trim();
+    } else {
+      // Minimal mode: Basic prompt for providers with built-in role handling
+      return `
 You are ROUTA, the planning coordinator in a multi-agent development system.
 
 Your role is to:
@@ -109,6 +152,7 @@ ${userRequest}
 
 Analyze the request and create @@@task blocks for each task.
 `.trim();
+    }
   }
 }
 

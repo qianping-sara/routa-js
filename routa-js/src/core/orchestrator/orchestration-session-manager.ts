@@ -108,13 +108,16 @@ class OrchestrationSessionManager {
 
   /**
    * Create a new orchestration session (like Kotlin's RoutaViewModel.initialize())
+   *
+   * @param useEnhancedRoutaPrompt Whether to inject full ROUTA system prompt (default: true for ACP agents)
    */
   async createSession(
     sessionId: string,
     workspaceId: string,
     provider: string,
     onPhaseChange?: (phase: OrchestratorPhase) => void | Promise<void>,
-    onStreamChunk?: (agentId: string, chunk: StreamChunk) => void
+    onStreamChunk?: (agentId: string, chunk: StreamChunk) => void,
+    useEnhancedRoutaPrompt: boolean = true
   ): Promise<OrchestrationSession> {
     console.log(`[SessionManager] Creating session ${sessionId} with provider ${provider}`);
 
@@ -139,7 +142,7 @@ class OrchestrationSessionManager {
     });
 
     // Create router
-    const router = new CapabilityBasedRouter([agentProvider]);
+    const router = new CapabilityBasedRouter(agentProvider);
 
     // Create orchestrator
     const orchestrator = new RoutaOrchestrator({
@@ -149,11 +152,11 @@ class OrchestrationSessionManager {
         taskStore,
         eventBus,
         agentTools,
-        router,
       },
       provider: agentProvider,
       workspaceId,
       parallelCrafters: false,
+      useEnhancedRoutaPrompt,
       onPhaseChange,
       onStreamChunk,
     });

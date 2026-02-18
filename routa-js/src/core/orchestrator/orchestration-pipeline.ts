@@ -151,11 +151,17 @@ export class OrchestrationPipeline {
 
   /**
    * Create the default ROUTA → CRAFTER → GATE pipeline.
+   *
+   * @param maxIterations Maximum number of verification waves
+   * @param useEnhancedRoutaPrompt Whether to inject full ROUTA system prompt
    */
-  static default(maxIterations: number = 3): OrchestrationPipeline {
+  static default(maxIterations: number = 3, useEnhancedRoutaPrompt: boolean = true): OrchestrationPipeline {
+    const planningStage = new PlanningStage();
+    planningStage.useEnhancedPrompt = useEnhancedRoutaPrompt;
+
     return new OrchestrationPipeline(
       [
-        new PlanningStage(),
+        planningStage,
         new TaskRegistrationStage(),
         new CrafterExecutionStage(),
         new GateVerificationStage(),

@@ -33,6 +33,16 @@ export interface OrchestratorConfig {
   /** Whether CRAFTERs execute in parallel within a wave */
   parallelCrafters?: boolean;
 
+  /**
+   * Whether to inject enhanced ROUTA system prompt.
+   *
+   * When true (default): Injects full RouteDefinitions.ROUTA.systemPrompt for ACP agents
+   * When false: Uses minimal prompt (for providers with built-in role handling)
+   *
+   * Similar to Kotlin's RoutaViewModel.useEnhancedRoutaPrompt
+   */
+  useEnhancedRoutaPrompt?: boolean;
+
   /** Callback for orchestration phase changes */
   onPhaseChange?: (phase: OrchestratorPhase) => void | Promise<void>;
 
@@ -66,6 +76,7 @@ export class RoutaOrchestrator {
   private workspaceId: string;
   private maxWaves: number;
   private parallelCrafters: boolean;
+  private useEnhancedRoutaPrompt: boolean;
   private onPhaseChange?: (phase: OrchestratorPhase) => void | Promise<void>;
   private onStreamChunk?: (agentId: string, chunk: StreamChunk) => void;
   private pipeline: OrchestrationPipeline;
@@ -76,10 +87,11 @@ export class RoutaOrchestrator {
     this.workspaceId = config.workspaceId;
     this.maxWaves = config.maxWaves ?? 3;
     this.parallelCrafters = config.parallelCrafters ?? false;
+    this.useEnhancedRoutaPrompt = config.useEnhancedRoutaPrompt ?? true;
     this.onPhaseChange = config.onPhaseChange;
     this.onStreamChunk = config.onStreamChunk;
     this.pipeline =
-      config.pipeline ?? OrchestrationPipeline.default(this.maxWaves);
+      config.pipeline ?? OrchestrationPipeline.default(this.maxWaves, this.useEnhancedRoutaPrompt);
   }
 
   /**
